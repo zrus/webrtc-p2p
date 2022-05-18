@@ -7,6 +7,7 @@ use bastion::supervisor::SupervisorRef;
 use gst::element_error;
 use gst::prelude::*;
 
+use gst_sdp::SDPMessage;
 use serde_derive::{Deserialize, Serialize};
 
 use anyhow::{anyhow, bail, Context};
@@ -14,6 +15,7 @@ use anyhow::{anyhow, bail, Context};
 use crate::upgrade_weak;
 use crate::utils;
 use crate::webrtcbin_actor::SDPType;
+use crate::webrtcbin_actor::SessionDescription;
 use crate::webrtcbin_actor::WebRTCBinActorType;
 
 const STUN_SERVER: &str = "stun://stun.l.google.com:19302";
@@ -128,7 +130,7 @@ impl App {
 
                 let app = upgrade_weak!(app_clone, None);
 
-                if let Err(err) = app.on_ice_candidate(mlineindex, candidate) {
+                if let Err(err) = app.on_ice_candidate(type_.as_ref(), mlineindex, candidate) {
                     element_error!(
                         app.pipeline,
                         gst::LibraryError::Failed,
@@ -174,45 +176,6 @@ impl App {
         });
 
         Ok(app)
-    }
-
-    // Handle WebSocket messages, both our own as well as WebSocket protocol messages
-    fn handle_websocket_message(&self, msg: &str) -> Result<(), anyhow::Error> {
-        if msg.starts_with("ERROR") {
-            bail!("Got error message: {}", msg);
-        }
-
-        let json_msg: JsonMsg = serde_json::from_str(msg)?;
-
-        match json_msg {
-            JsonMsg::Sdp { type_, sdp } => self.handle_sdp(&type_, &sdp),
-            JsonMsg::Ice {
-                sdp_mline_index,
-                candidate,
-            } => self.handle_ice(sdp_mline_index, &candidate),
-        }
-    }
-
-    // Handle GStreamer messages coming from the pipeline
-    fn handle_pipeline_message(&self, message: &gst::Message) -> Result<(), anyhow::Error> {
-        use gst::message::MessageView;
-
-        match message.view() {
-            MessageView::Error(err) => bail!(
-                "Error from element {}: {} ({})",
-                err.src()
-                    .map(|s| String::from(s.path_string()))
-                    .unwrap_or_else(|| String::from("None")),
-                err.error(),
-                err.debug().unwrap_or_else(|| String::from("None")),
-            ),
-            MessageView::Warning(warning) => {
-                println!("Warning: \"{}\"", warning.debug().unwrap());
-            }
-            _ => (),
-        }
-
-        Ok(())
     }
 
     // Whenever webrtcbin tells us that (re-)negotiation is needed, simply ask
@@ -266,14 +229,11 @@ impl App {
             .emit_by_name("set-local-description", &[&offer, &None::<gst::Promise>])
             .unwrap();
 
-        let mut sdp = offer.sdp().as_text().unwrap();
-        println!("Sending SDP offer to server:\n{}", sdp);
-        sdp = utils::serialize(&SDPType::Offer, &sdp)?;
+        let mut sdp = offer.sdp();
 
-        // TODO
         Distributor::named("server")
-            .tell_one(sdp)
-            .expect("couldn't send to server");
+            .tell_one((SDPType::Offer, sdp))
+            .expect("couldn't send SDP offer to server");
 
         Ok(())
     }
@@ -303,77 +263,62 @@ impl App {
             .emit_by_name("set-local-description", &[&answer, &None::<gst::Promise>])
             .unwrap();
 
-        let mut sdp = answer.sdp().as_text().unwrap();
-        println!("Sending SDP answer to client:\n{}", sdp);
-        sdp = utils::serialize(&SDPType::Answer, &sdp)?;
+        let sdp = answer.sdp();
 
-        // TODO
         Distributor::named("client")
-            .tell_one(sdp)
-            .expect("couldn't send to client");
+            .tell_one((SDPType::Answer, sdp))
+            .expect("couldn't send SDP answer to client");
 
         Ok(())
     }
 
     // Handle incoming SDP answers from the peer
-    fn handle_sdp(&self, type_: &str, sdp: &str) -> Result<(), anyhow::Error> {
-        if type_ == "answer" {
-            print!("Received answer:\n{}\n", sdp);
+    fn handle_sdp(&self, type_: SDPType, sdp: SDPMessage) -> Result<(), anyhow::Error> {
+        match type_ {
+            SDPType::Answer => {
+                let answer = SessionDescription::new(SDPType::Answer, sdp);
 
-            let ret = gst_sdp::SDPMessage::parse_buffer(sdp.as_bytes())
-                .map_err(|_| anyhow!("Failed to parse SDP answer"))?;
-            let answer =
-                gst_webrtc::WebRTCSessionDescription::new(gst_webrtc::WebRTCSDPType::Answer, ret);
+                self.webrtcbin
+                    .emit_by_name("set-remote-description", &[&answer, &None::<gst::Promise>])
+                    .expect("couldn't set remote description for webrtcbin");
 
-            self.webrtcbin
-                .emit_by_name("set-remote-description", &[&answer, &None::<gst::Promise>])
-                .unwrap();
+                Ok(())
+            }
+            SDPType::Offer => {
+                let pl_clone = self.downgrade();
+                self.pipeline.call_async(move |_| {
+                    let pipeline = upgrade_weak!(pl_clone);
 
-            Ok(())
-        } else if type_ == "offer" {
-            print!("Received offer:\n{}\n", sdp);
+                    let offer = SessionDescription::new(type_, sdp);
+                    pipeline
+                        .0
+                        .webrtcbin
+                        .emit_by_name("set-remote-description", &[&offer, &None::<gst::Promise>])
+                        .expect("couldn't set remote description for webrtcbin");
 
-            let ret = gst_sdp::SDPMessage::parse_buffer(sdp.as_bytes())
-                .map_err(|_| anyhow!("Failed to parse SDP offer"))?;
+                    let pl_clone = pipeline.downgrade();
+                    let promise = gst::Promise::with_change_func(move |reply| {
+                        let pipeline = upgrade_weak!(pl_clone);
 
-            // And then asynchronously start our pipeline and do the next steps. The
-            // pipeline needs to be started before we can create an answer
-            let app_clone = self.downgrade();
-            self.pipeline.call_async(move |_pipeline| {
-                let app = upgrade_weak!(app_clone);
+                        if let Err(err) = pipeline.on_answer_created(reply) {
+                            gst::element_error!(
+                                pipeline.pipeline,
+                                gst::LibraryError::Failed,
+                                ("Failed to send SDP answer: {:?}", err)
+                            );
+                        }
+                    });
 
-                let offer = gst_webrtc::WebRTCSessionDescription::new(
-                    gst_webrtc::WebRTCSDPType::Offer,
-                    ret,
-                );
-
-                app.0
-                    .webrtcbin
-                    .emit_by_name("set-remote-description", &[&offer, &None::<gst::Promise>])
-                    .unwrap();
-
-                let app_clone = app.downgrade();
-                let promise = gst::Promise::with_change_func(move |reply| {
-                    let app = upgrade_weak!(app_clone);
-
-                    if let Err(err) = app.on_answer_created(reply) {
-                        element_error!(
-                            app.pipeline,
-                            gst::LibraryError::Failed,
-                            ("Failed to send SDP answer: {:?}", err)
-                        );
-                    }
+                    pipeline
+                        .0
+                        .webrtcbin
+                        .emit_by_name("create-answer", &[&None::<gst::Structure>, &promise])
+                        .expect("couldn't create answer for webrtcbin");
                 });
 
-                app.0
-                    .webrtcbin
-                    .emit_by_name("create-answer", &[&None::<gst::Structure>, &promise])
-                    .unwrap();
-            });
-
-            Ok(())
-        } else {
-            bail!("Sdp type is not \"answer\" but \"{}\"", type_)
+                Ok(())
+            }
+            _ => bail!("SDP type is not \"answer\" but \"{}\"", type_.to_str()),
         }
     }
 
@@ -381,22 +326,24 @@ impl App {
     fn handle_ice(&self, sdp_mline_index: u32, candidate: &str) -> Result<(), anyhow::Error> {
         self.webrtcbin
             .emit_by_name("add-ice-candidate", &[&sdp_mline_index, &candidate])
-            .unwrap();
-
+            .expect("couldn't add ice candidate");
+        let property = self.webrtcbin.property("ice-connection-state")?;
+        let ice_state = property.get::<gst_webrtc::WebRTCICEConnectionState>()?;
+        println!("\n==========           ice state: {:?}\n", ice_state);
         Ok(())
     }
 
     // Asynchronously send ICE candidates to the peer via the WebSocket connection as a JSON
     // message
-    fn on_ice_candidate(&self, mlineindex: u32, candidate: String) -> Result<(), anyhow::Error> {
-        let message = serde_json::to_string(&JsonMsg::Ice {
-            candidate,
-            sdp_mline_index: mlineindex,
-        })
-        .unwrap();
-
-        // TODO
-
+    fn on_ice_candidate(
+        &self,
+        type_: &str,
+        mlineindex: u32,
+        candidate: String,
+    ) -> Result<(), anyhow::Error> {
+        Distributor::named(type_)
+            .tell_one((mlineindex, candidate))
+            .expect("couldn't send msg");
         Ok(())
     }
 
@@ -441,11 +388,6 @@ impl App {
                 "queue ! videoconvert ! videoscale ! autovideosink",
                 true,
             )?
-        } else if name.starts_with("audio/") {
-            gst::parse_bin_from_description(
-                "queue ! audioconvert ! audioresample ! autoaudiosink",
-                true,
-            )?
         } else {
             println!("Unknown pad {:?}, ignoring", pad);
             return Ok(());
@@ -474,9 +416,11 @@ impl Drop for AppInner {
 fn main_loop(pipeline: App) -> Result<(), anyhow::Error> {
     let bus = pipeline.pipeline.bus().unwrap();
 
+    println!("HELLOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO");
+
     for msg in bus.iter_timed(gst::ClockTime::NONE) {
         use gst::message::MessageView;
-        println!(".");
+        println!("============================");
         match msg.view() {
             MessageView::Error(err) => bail!(
                 "Error from element {}: {} ({})",
@@ -503,27 +447,26 @@ async fn run(ctx: BastionContext, type_: WebRTCBinActorType) -> Result<(), ()> {
     let app_clone = app.downgrade();
     bastion::blocking! {main_loop(app)};
     loop {
-        MessageHandler::new(ctx.recv().await?).on_tell(|sdp: String, _| {
-            println!("{}", sdp);
-            bastion::run! { async {
-                match utils::deserialize(&sdp).await {
-                    Ok((type_, sdp)) => {
-                        let type_ = match type_ {
-                            gst_webrtc::WebRTCSDPType::Offer => "offer",
-                            // gst_webrtc::WebRTCSDPType::Pranswer => todo!(),
-                            gst_webrtc::WebRTCSDPType::Answer => "answer",
-                            // gst_webrtc::WebRTCSDPType::Rollback => todo!(),
-                            _ => return,
-                        };
-                        println!("sdp: {}", sdp);
+        MessageHandler::new(ctx.recv().await?)
+            .on_tell(|(sdp_type, sdp): (SDPType, SDPMessage), _| {
+                println!(
+                    "{} sdp received: {}",
+                    type_.as_ref(),
+                    sdp.as_text().unwrap()
+                );
+                bastion::run! { async {
                         let app = upgrade_weak!(app_clone);
                         app
-                            .handle_sdp(type_, &sdp);
+                            .handle_sdp(sdp_type, sdp);
                     }
-                    Err(e) => println!("{}", e),
                 }
-            }}
-        });
+            })
+            .on_tell(|ice_candidate: (u32, String), _| {
+                println!("{} candidate received: {:?}", type_.as_ref(), ice_candidate);
+                let app = upgrade_weak!(app_clone);
+                app.handle_ice(ice_candidate.0, &ice_candidate.1)
+                    .expect("couldn't handle sdp");
+            });
     }
 }
 

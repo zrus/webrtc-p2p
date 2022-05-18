@@ -5,10 +5,10 @@ extern crate lazy_static;
 mod client;
 mod gstreamer_actor;
 mod pipeline;
+mod sendrecv;
 mod utils;
 mod webrtc_actor;
 mod webrtcbin_actor;
-mod sendrecv;
 
 use anyhow::Result;
 use bastion::prelude::*;

@@ -15,6 +15,7 @@ serde_derive = "*"
 lazy_static = "*"
 base64 = "*"
 hyper = { version = "0.14.16", features = ["full"] }
+byte-slice-cast = "*"
 
 tokio = { version = "*", features = ["full"] }
 tokio-util = { version = "*", features = ["full"] }
@@ -24,3 +25,4 @@ bastion = { git = "https://github.com/bastion-rs/bastion.git", features = ["toki
 gst = { package = "gstreamer", version = "0.17", features = ["v1_14"] }
 gst-sdp = { package = "gstreamer-sdp", version = "0.17", features = ["v1_14"] }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.17" }
+gst-app = { package = "gstreamer-app", version = "0.17" }
