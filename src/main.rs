@@ -19,21 +19,43 @@ async fn main() {
     Bastion::init();
     Bastion::start();
 
+    main_fn();
+
+    Bastion::block_until_stopped();
+}
+
+#[cfg(feature = "webrtcbin")]
+fn main_fn() -> Result<(), anyhow::Error> {
+    // MY WORKS
+
     let server_parent = Bastion::supervisor(|s| s).unwrap();
     WebRTCBinActor::run(server_parent, WebRTCBinActorType::Server);
-    // tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     let client_parent = Bastion::supervisor(|s| s).unwrap();
     WebRTCBinActor::run(client_parent, WebRTCBinActorType::Client);
-    // tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // EXAMPLE FROM GSTREAMER
 
     // let server_parent = Bastion::supervisor(|s| s).unwrap();
     // sendrecv::test(server_parent, WebRTCBinActorType::Server);
-    // // tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // let client_parent = Bastion::supervisor(|s| s).unwrap();
     // sendrecv::test(client_parent, WebRTCBinActorType::Client);
-    // // tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-    Bastion::block_until_stopped();
+    Ok(())
+}
+
+#[cfg(any(not(feature = "webrtcbin"), feature = "webrtc-rs"))]
+fn main_fn() -> Result<(), anyhow::Error> {
+    use webrtc_actor::WebRtcActor;
+
+    let mut line = String::new();
+
+    std::io::stdin().read_line(&mut line)?;
+    line = line.trim().to_owned();
+
+    let parent = Bastion::supervisor(|s| s).unwrap();
+    WebRtcActor::run(parent, &line);
+
+    Ok(())
 }
