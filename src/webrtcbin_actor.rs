@@ -21,7 +21,7 @@ use gst::{
 use gst_sdp::SDPMessage;
 use serde_json::{json, Value};
 
-use crate::{upgrade_weak, utils};
+use main1::{upgrade_weak, utils};
 
 pub type SDPType = gst_webrtc::WebRTCSDPType;
 pub type SessionDescription = gst_webrtc::WebRTCSessionDescription;
@@ -353,6 +353,33 @@ impl WebRTCPipeline {
             .unwrap();
 
         let sdp = offer.sdp();
+
+        let sdp = "v=0
+            o=- 5607281317062033425 0 IN IP4 0.0.0.0
+            s=-
+            t=0 0
+            a=ice-options:trickle
+            m=video 9 UDP/TLS/RTP/SAVPF 101 96 97
+            c=IN IP4 0.0.0.0
+            a=setup:actpass
+            a=ice-ufrag:TemqMuIamobRuidOdWGTvYRaTr4V7f2D
+            a=ice-pwd:8D5chPmyHr3yQvnGNSpVXP2J9zy3LwXM
+            a=rtcp-mux
+            a=rtcp-rsize
+            a=sendrecv
+            a=rtpmap:101 VP8/90000
+            a=rtcp-fb:101 nack pli
+            a=rtcp-fb:101 transport-cc
+            a=framerate:30
+            a=rtpmap:96 red/90000
+            a=rtpmap:97 ulpfec/90000
+            a=ssrc:1458649996 msid:user3266174435@host-e768e70f webrtctransceiver0
+            a=ssrc:1458649996 cname:user3266174435@host-e768e70f
+            a=mid:video0
+            a=fingerprint:sha-256 E4:E3:AC:34:3D:AF:B3:D8:BB:D0:6F:86:AF:79:88:42:22:AD:A1:D5:F0:0D:E4:94:89:94:0C:EE:1E:D3:11:DA
+            a=rtcp-mux-only";
+
+        let sdp = SDPMessage::parse_buffer(sdp.as_bytes())?;
 
         Distributor::named("server")
             .tell_one((SDPType::Offer, sdp))

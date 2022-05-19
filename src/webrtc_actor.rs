@@ -24,7 +24,7 @@ use webrtc::{
     Error,
 };
 
-use crate::gstreamer_actor::GstreamerActor;
+use main1::gstreamer_actor::GstreamerActor;
 
 pub struct WebRtcActor;
 

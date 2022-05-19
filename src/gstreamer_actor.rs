@@ -1,7 +1,7 @@
 use bastion::supervisor::{ActorRestartStrategy, RestartPolicy, RestartStrategy, SupervisorRef};
 use gst::glib;
 
-use crate::pipeline::Pipeline;
+use main1::pipeline::Pipeline;
 
 pub struct GstreamerActor;
 
