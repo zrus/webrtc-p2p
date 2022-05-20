@@ -81,37 +81,12 @@ impl WebRTCPipeline {
 
 impl WebRTCPipeline {
     fn create_client() -> Result<Self, anyhow::Error> {
-        let pipeline = gst::parse_launch(
-            "webrtcbin name=webrtcbin ! rtpvp8depay ! vp8dec ! videoconvert ! appsink name=app",
-        )
-        .expect("couldn't parse pipeline from string");
+        let pipeline = gst::parse_launch("webrtcbin name=webrtcbin ! audiotestsrc ! fakesink")
+            .expect("couldn't parse pipeline from string");
 
         let pipeline = pipeline
             .downcast::<gst::Pipeline>()
             .expect("couldn't downcast pipeline");
-
-        let app = pipeline
-            .by_name("app")
-            .expect("couldn't get element named app")
-            .downcast::<gst_app::AppSink>()
-            .expect("couldn't downcast to appsink");
-
-        app.set_property("max-buffers", 5u32);
-        app.set_property("drop", true);
-        app.set_property("sync", true);
-        app.set_property("wait-on-eos", false);
-
-        app.set_callbacks(
-            gst_app::AppSinkCallbacks::builder()
-                .new_sample(move |appsink| {
-                    let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-
-                    println!("==========================================");
-
-                    Ok(gst::FlowSuccess::Ok)
-                })
-                .build(),
-        );
 
         let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
         webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
@@ -185,7 +160,7 @@ impl WebRTCPipeline {
     fn create_server() -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
             "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! 
-            vp8enc deadline=1 ! rtpvp8pay pt=96 ! application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
+            vp8enc deadline=1 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
 
@@ -439,11 +414,35 @@ impl WebRTCPipeline {
         let name = caps.structure(0).unwrap().name();
 
         let sink = if name.starts_with("video/") {
-            gst::parse_bin_from_description("queue ! videoconvert ! autovideosink", true)?
+            // gst::parse_bin_from_description("queue ! videoconvert ! appsink name=app", true)?
+            gst::parse_bin_from_description("queue ! rtpvp8depay ! vp8dec ! videoconvert ! jpegenc ! multifilesink post-messages=true location=\"./frames/frame%d.jpg\"", true)?
         } else {
             println!("Unknown pad {:?}, ignoring", pad);
             return Ok(());
         };
+
+        // let app = sink
+        //     .by_name("app")
+        //     .expect("couldn't get element named app")
+        //     .downcast::<gst_app::AppSink>()
+        //     .expect("couldn't downcast to appsink");
+
+        // app.set_property("max-buffers", 5u32);
+        // app.set_property("drop", true);
+        // app.set_property("sync", true);
+        // app.set_property("wait-on-eos", false);
+
+        // app.set_callbacks(
+        //     gst_app::AppSinkCallbacks::builder()
+        //         .new_sample(move |appsink| {
+        //             let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+
+        //             println!("{:?}", sample);
+
+        //             Ok(gst::FlowSuccess::Ok)
+        //         })
+        //         .build(),
+        // );
 
         self.pipeline.add(&sink).unwrap();
         sink.sync_state_with_parent()
@@ -477,7 +476,10 @@ fn main_loop(pipeline: WebRTCPipeline) -> Result<(), anyhow::Error> {
             MessageView::Warning(warning) => {
                 println!("Warning: \"{}\"", warning.debug().unwrap());
             }
-            MessageView::Eos(..) => return Ok(()),
+            MessageView::Eos(..) => {
+                println!(" ========================================= ");
+                return Ok(());
+            }
             _ => (),
         }
     }
