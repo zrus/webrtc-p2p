@@ -415,7 +415,7 @@ impl WebRTCPipeline {
 
         let sink = if name.starts_with("video/") {
             // gst::parse_bin_from_description("queue ! videoconvert ! appsink name=app", true)?
-            gst::parse_bin_from_description("queue ! rtpvp8depay ! vp8dec ! videoconvert ! jpegenc ! multifilesink post-messages=true location=\"./frames/frame%d.jpg\"", true)?
+            gst::parse_bin_from_description("queue ! videoconvert ! jpegenc ! multifilesink post-messages=true location=\"./frames/frame%d.jpg\"", true)?
         } else {
             println!("Unknown pad {:?}, ignoring", pad);
             return Ok(());
