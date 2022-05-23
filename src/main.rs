@@ -2,16 +2,17 @@
 
 extern crate lazy_static;
 
-mod client;
 mod gstreamer_actor;
 mod pipeline;
 mod sendrecv;
 mod utils;
+mod web_socket;
 mod webrtc_actor;
 mod webrtcbin_actor;
 
 use anyhow::Result;
 use bastion::prelude::*;
+use web_socket::WsActor;
 use webrtcbin_actor::{WebRTCBinActor, WebRTCBinActorType};
 
 #[tokio::main]
@@ -19,7 +20,11 @@ async fn main() {
     Bastion::init();
     Bastion::start();
 
-    main_fn();
+    let server_parent = Bastion::supervisor(|s| s).unwrap();
+    WebRTCBinActor::run(server_parent, WebRTCBinActorType::Server);
+
+    let ws_server = Bastion::supervisor(|s| s).unwrap();
+    WsActor::run(ws_server);
 
     Bastion::block_until_stopped();
 }
