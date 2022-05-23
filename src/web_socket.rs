@@ -45,7 +45,10 @@ impl WsActor {
                     RestartStrategy::default().with_restart_policy(RestartPolicy::Never), // .with_restart_policy(RestartPolicy::Tries(5))
                                                                                           // .with_actor_restart_strategy(ActorRestartStrategy::Immediate),
                 )
-                .children(|c| c.with_distributor(Distributor::named("web_socket")).with_exec(async_main))
+                .children(|c| {
+                    c.with_distributor(Distributor::named("web_socket"))
+                        .with_exec(async_main)
+                })
             })
             .expect("couldn't run WebRTC actor");
     }
@@ -107,6 +110,7 @@ async fn async_main(ctx: BastionContext) -> Result<(), ()> {
     loop {
         MessageHandler::new(ctx.recv().await?)
             .on_tell(|(sdp_type, sdp): (SDPType, SDPMessage), _| {
+                println!("prepare to send sdp");
                 let msg = serde_json::to_string(&JsonMsg::Sdp {
                     type_: "answer".to_owned(),
                     sdp: sdp.as_text().unwrap(),
@@ -115,6 +119,7 @@ async fn async_main(ctx: BastionContext) -> Result<(), ()> {
                 send_ws_msg_tx.unbounded_send(WsMessage::Text(msg));
             })
             .on_tell(|(mlineindex, candidate): (u32, String), _| {
+                println!("prepare to send ice candidate");
                 let msg = serde_json::to_string(&JsonMsg::Ice {
                     candidate,
                     sdp_mline_index: mlineindex,
