@@ -91,7 +91,7 @@ impl WebRTCPipeline {
 
         let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
         webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
-        // webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
+        webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
 
         let direction = gst_webrtc::WebRTCRTPTransceiverDirection::Recvonly;
         let caps = gst::Caps::from_str(
