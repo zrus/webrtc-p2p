@@ -159,9 +159,8 @@ impl WebRTCPipeline {
 
     fn create_server() -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
-            // "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! 
-            // vp8enc deadline=1 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
-            "videotestsrc pattern=ball is-live=true ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtcbin. webrtcbin name=webrtcbin"
+            "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! 
+            vp8enc deadline=1 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
 
