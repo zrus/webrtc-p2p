@@ -70,7 +70,7 @@ impl WsActor {
                     _ => bail!("sdp type not supported"),
                 };
                 let sdp = SDPMessage::parse_buffer(sdp.as_bytes())?;
-                webrtcbin.tell_one(((type_, sdp)))
+                webrtcbin.tell_one((type_, sdp))
             }
             JsonMsg::Ice {
                 sdp_mline_index,
@@ -164,6 +164,7 @@ async fn run(
                     WsMessage::Pong(_) => None,
                     WsMessage::Binary(_) => None,
                     WsMessage::Text(text) => {
+                        println!("test");
                         WsActor::handle_websocket_message(&text).map_err(|e| eprintln!("{}", e))?;
                         None
                     },
