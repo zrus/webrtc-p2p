@@ -21,7 +21,7 @@ async fn main() {
     Bastion::start();
 
     let server_parent = Bastion::supervisor(|s| s).unwrap();
-    WebRTCBinActor::run(server_parent, WebRTCBinActorType::Server);
+    WebRTCBinActor::run(server_parent, WebRTCBinActorType::Client);
 
     let ws_server = Bastion::supervisor(|s| s).unwrap();
     WsActor::run(ws_server);
@@ -60,7 +60,7 @@ fn main_fn() -> Result<(), anyhow::Error> {
     line = line.trim().to_owned();
 
     let parent = Bastion::supervisor(|s| s).unwrap();
-    WebRtcActor::run(parent, &line);
+    WebRtcActor::run(parent);
 
     Ok(())
 }

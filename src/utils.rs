@@ -16,7 +16,7 @@ pub fn serialize(type_: &SDPType, sdp: &str) -> Result<String, anyhow::Error> {
 
     json_answer = json!({
       "type": type_,
-      "sdp": json_answer,
+      "sdp": sdp,
     })
     .to_string();
     let b64 = base64::encode(&json_answer);

@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
 use bastion::{
+    distributor::Distributor,
+    message::MessageHandler,
     spawn,
     supervisor::{RestartPolicy, RestartStrategy, SupervisorRef},
 };
+use gst_sdp::SDPMessage;
 use tokio::{net::UdpSocket, select};
 use webrtc::{
     api::{
@@ -24,13 +27,12 @@ use webrtc::{
     Error,
 };
 
-use crate::gstreamer_actor::GstreamerActor;
+use crate::{gstreamer_actor::GstreamerActor, webrtcbin_actor::SDPType};
 
 pub struct WebRtcActor;
 
 impl WebRtcActor {
-    pub fn run(parent: SupervisorRef, sdp: &str) {
-        let sdp = sdp.to_owned();
+    pub fn run(parent: SupervisorRef) {
         parent
             .supervisor(|s| {
                 s.with_restart_strategy(
@@ -38,12 +40,20 @@ impl WebRtcActor {
                                                                                           // .with_actor_restart_strategy(ActorRestartStrategy::Immediate),
                 )
                 .children(|c| {
-                    c.with_exec(move |ctx| {
-                        println!("WebRTC started");
-                        let sdp = sdp.clone();
-                        GstreamerActor::run(ctx.supervisor().unwrap().supervisor(|s| s).unwrap());
-                        main_fn(sdp)
-                    })
+                    c.with_distributor(Distributor::named("server"))
+                        .with_exec(|ctx| async move {
+                            println!("WebRTC started");
+                            GstreamerActor::run(
+                                ctx.supervisor().unwrap().supervisor(|s| s).unwrap(),
+                            );
+                            loop {
+                                MessageHandler::new(ctx.recv().await?).on_tell(|sdp: String, _| {
+                                    bastion::spawn! {
+                                        main_fn(sdp)
+                                    }
+                                });
+                            }
+                        })
                 })
             })
             .expect("couldn't run WebRTC actor");
@@ -129,6 +139,7 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
     let desc_data = String::from_utf8(bdata).expect("couldn't create string from utf8");
     let offer =
         serde_json::from_str::<RTCSessionDescription>(&desc_data).expect("couldn't deserialize");
+    println!("{:?}", offer);
 
     peer_connection
         .set_remote_description(offer)
@@ -155,6 +166,10 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
         let b64 = base64::encode(&json_str);
         println!("{}", json_str);
         println!("{}", b64);
+        Distributor::named("client").tell_one((
+            SDPType::Answer,
+            SDPMessage::parse_buffer(local_desc.sdp.as_bytes()).unwrap(),
+        ));
     } else {
         println!("generate local_description failed!");
     }

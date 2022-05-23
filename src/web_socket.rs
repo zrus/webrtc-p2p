@@ -45,7 +45,10 @@ impl WsActor {
                     RestartStrategy::default().with_restart_policy(RestartPolicy::Never), // .with_restart_policy(RestartPolicy::Tries(5))
                                                                                           // .with_actor_restart_strategy(ActorRestartStrategy::Immediate),
                 )
-                .children(|c| c.with_distributor(Distributor::named("web_socket")).with_exec(async_main))
+                .children(|c| {
+                    c.with_distributor(Distributor::named("web_socket"))
+                        .with_exec(async_main)
+                })
             })
             .expect("couldn't run WebRTC actor");
     }
@@ -84,7 +87,7 @@ async fn async_main(ctx: BastionContext) -> Result<(), ()> {
         .await
         .map_err(|e| eprintln!("{}", e))?;
 
-    let our_id = 2234;
+    let our_id = 2235;
     ws.send(WsMessage::Text(format!("HELLO {}", our_id)))
         .await
         .map_err(|e| eprintln!("{}", e))?;
@@ -98,6 +101,21 @@ async fn async_main(ctx: BastionContext) -> Result<(), ()> {
 
     if msg != WsMessage::Text("HELLO".into()) {
         eprintln!("server didn't say HELLO");
+    }
+
+    ws.send(WsMessage::Text(format!("SESSION {}", 2234)))
+        .await
+        .map_err(|e| eprintln!("{}", e))?;
+
+    let msg = ws
+        .next()
+        .await
+        .ok_or_else(|| anyhow!("didn't receive anything"))
+        .map_err(|e| eprintln!("{}", e))?
+        .map_err(|e| eprintln!("error"))?;
+
+    if msg != WsMessage::Text("SESSION_OK".into()) {
+        eprintln!("server error: {:?}", msg);
     }
 
     let (send_ws_msg_tx, send_ws_msg_rx) = mpsc::unbounded::<WsMessage>();

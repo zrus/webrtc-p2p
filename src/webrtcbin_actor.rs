@@ -19,6 +19,7 @@ use gst::{
     traits::{ElementExt, GstBinExt, GstObjectExt, PadExt},
 };
 use gst_sdp::SDPMessage;
+use gst_webrtc::WebRTCSDPType;
 use serde_json::{json, Value};
 
 use crate::{upgrade_weak, utils};
@@ -90,7 +91,7 @@ impl WebRTCPipeline {
 
         let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
         webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
-        webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
+        // webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
 
         let direction = gst_webrtc::WebRTCRTPTransceiverDirection::Recvonly;
         let caps = gst::Caps::from_str(
@@ -129,7 +130,7 @@ impl WebRTCPipeline {
                 let candidate = values[2].get::<String>().expect("invalid argument");
                 let pipeline = upgrade_weak!(pl_clone, None);
 
-                if let Err(err) = pipeline.on_ice_candidate("server", mlineindex, candidate) {
+                if let Err(err) = pipeline.on_ice_candidate("web_socket", mlineindex, candidate) {
                     gst::element_error!(
                         pipeline.pipeline,
                         gst::LibraryError::Failed,
@@ -159,9 +160,8 @@ impl WebRTCPipeline {
 
     fn create_server() -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
-            // "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! 
-            // vp8enc deadline=1 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
-            "videotestsrc pattern=ball is-live=true ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtcbin. webrtcbin name=webrtcbin"
+            "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! 
+            vp8enc deadline=1 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
 
@@ -171,7 +171,7 @@ impl WebRTCPipeline {
 
         let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
         webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
-        webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
+        // webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
 
         let pipeline = Self(Arc::new(WebRTCPipelineInner {
             pipeline,
@@ -278,7 +278,6 @@ impl WebRTCPipeline {
             .expect("couldn't add ice candidate");
         let property = self.webrtcbin.property("ice-connection-state")?;
         let ice_state = property.get::<gst_webrtc::WebRTCICEConnectionState>()?;
-        println!("\n==========           ice state: {:?}\n", ice_state);
         Ok(())
     }
 
@@ -330,7 +329,7 @@ impl WebRTCPipeline {
 
         let sdp = offer.sdp();
 
-        Distributor::named("server")
+        Distributor::named("web_socket")
             .tell_one((SDPType::Offer, sdp))
             .expect("couldn't send SDP offer to server");
 
