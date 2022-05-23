@@ -112,7 +112,7 @@ async fn async_main(ctx: BastionContext) -> Result<(), ()> {
             .on_tell(|(sdp_type, sdp): (SDPType, SDPMessage), _| {
                 println!("prepare to send sdp");
                 let msg = serde_json::to_string(&JsonMsg::Sdp {
-                    type_: "answer".to_owned(),
+                    type_: sdp_type.to_str().to_owned(),
                     sdp: sdp.as_text().unwrap(),
                 })
                 .unwrap();
