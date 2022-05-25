@@ -81,6 +81,11 @@ impl WebRTCPipeline {
 }
 
 impl WebRTCPipeline {
+    // fn create_client() -> Result<Self, anyhow::Error> {
+    //     let pipeline = gst::Pipeline::new(None);
+    //     let webrtcbin = gst::ElementFactory::make("webrtcbin", Some("webrtcbin"));
+    // }
+
     fn create_client() -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch("webrtcbin name=webrtcbin ! audiotestsrc ! fakesink")
             .expect("couldn't parse pipeline from string");

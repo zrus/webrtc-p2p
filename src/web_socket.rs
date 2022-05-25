@@ -60,7 +60,7 @@ impl WsActor {
 
         let json_msg: JsonMsg = serde_json::from_str(msg)?;
 
-        let webrtcbin = Distributor::named("server");
+        let webrtcbin = Distributor::named("client");
 
         match json_msg {
             JsonMsg::Sdp { type_, sdp } => {
@@ -164,7 +164,6 @@ async fn run(
                     WsMessage::Pong(_) => None,
                     WsMessage::Binary(_) => None,
                     WsMessage::Text(text) => {
-                        println!("test");
                         WsActor::handle_websocket_message(&text).map_err(|e| eprintln!("{}", e))?;
                         None
                     },
