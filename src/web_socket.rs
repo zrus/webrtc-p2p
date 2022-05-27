@@ -87,7 +87,7 @@ async fn async_main(ctx: BastionContext) -> Result<(), ()> {
         .await
         .map_err(|e| eprintln!("{}", e))?;
 
-    let our_id = 2234;
+    let our_id = 1212;
     ws.send(WsMessage::Text(format!("HELLO {}", our_id)))
         .await
         .map_err(|e| eprintln!("{}", e))?;
