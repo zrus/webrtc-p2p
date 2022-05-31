@@ -38,29 +38,28 @@ enum JsonMsg {
 pub struct WsActor;
 
 impl WsActor {
-    pub fn run(parent: SupervisorRef) {
+    pub fn run(parent: SupervisorRef, order: u8) {
         parent
             .supervisor(|s| {
                 s.with_restart_strategy(
-                    RestartStrategy::default().with_restart_policy(RestartPolicy::Never), // .with_restart_policy(RestartPolicy::Tries(5))
-                                                                                          // .with_actor_restart_strategy(ActorRestartStrategy::Immediate),
+                    RestartStrategy::default().with_restart_policy(RestartPolicy::Never),
                 )
-                .children(|c| {
-                    c.with_distributor(Distributor::named("web_socket"))
-                        .with_exec(async_main)
+                .children(move |c| {
+                    c.with_distributor(Distributor::named(format!("web_socket_{}", order)))
+                        .with_exec(move |ctx| async_main(ctx, order))
                 })
             })
             .expect("couldn't run WebRTC actor");
     }
 
-    fn handle_websocket_message(msg: &str) -> Result<(), anyhow::Error> {
+    fn handle_websocket_message(msg: &str, order: u8) -> Result<(), anyhow::Error> {
         if msg.starts_with("ERROR") {
             bail!("Got error message: {}", msg);
         }
 
         let json_msg: JsonMsg = serde_json::from_str(msg)?;
 
-        let webrtcbin = Distributor::named("server");
+        let webrtcbin = Distributor::named(format!("server_{}", order));
 
         match json_msg {
             JsonMsg::Sdp { type_, sdp } => {
@@ -82,12 +81,12 @@ impl WsActor {
     }
 }
 
-async fn async_main(ctx: BastionContext) -> Result<(), ()> {
+async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
     let (mut ws, _) = async_tungstenite::async_std::connect_async(WS_SERVER)
         .await
         .map_err(|e| eprintln!("{}", e))?;
 
-    let our_id = 1212;
+    let our_id = order;
     ws.send(WsMessage::Text(format!("HELLO {}", our_id)))
         .await
         .map_err(|e| eprintln!("{}", e))?;
@@ -100,12 +99,12 @@ async fn async_main(ctx: BastionContext) -> Result<(), ()> {
         .map_err(|e| eprintln!("error"))?;
 
     if msg != WsMessage::Text("HELLO".into()) {
-        eprintln!("server didn't say HELLO");
+        eprintln!("server {} didn't say HELLO", order);
     }
 
     let (send_ws_msg_tx, send_ws_msg_rx) = mpsc::unbounded::<WsMessage>();
 
-    blocking!(run(send_ws_msg_rx, ws).await);
+    blocking!(run(send_ws_msg_rx, ws, order).await);
 
     loop {
         MessageHandler::new(ctx.recv().await?)
@@ -133,6 +132,7 @@ async fn async_main(ctx: BastionContext) -> Result<(), ()> {
 async fn run(
     send_ws_msg_rx: UnboundedReceiver<WsMessage>,
     ws: impl Sink<WsMessage, Error = WsError> + Stream<Item = Result<WsMessage, WsError>>,
+    order: u8,
 ) -> Result<(), ()> {
     let (mut ws_sink, ws_stream) = ws.split();
 
@@ -151,7 +151,7 @@ async fn run(
                     WsMessage::Pong(_) => None,
                     WsMessage::Binary(_) => None,
                     WsMessage::Text(text) => {
-                        WsActor::handle_websocket_message(&text).map_err(|e| eprintln!("{}", e))?;
+                        WsActor::handle_websocket_message(&text, order).map_err(|e| eprintln!("{}", e))?;
                         None
                     },
                 }

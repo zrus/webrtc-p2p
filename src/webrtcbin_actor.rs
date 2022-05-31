@@ -80,7 +80,7 @@ impl WebRTCPipeline {
 }
 
 impl WebRTCPipeline {
-    fn create_client() -> Result<Self, anyhow::Error> {
+    fn create_client(order: u8) -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch("webrtcbin name=webrtcbin ! audiotestsrc ! fakesink")
             .expect("couldn't parse pipeline from string");
 
@@ -110,7 +110,7 @@ impl WebRTCPipeline {
             .webrtcbin
             .connect("on-negotiation-needed", true, move |_| {
                 let pipeline = upgrade_weak!(pl_clone, None);
-                if let Err(err) = pipeline.on_negotiation_needed() {
+                if let Err(err) = pipeline.on_negotiation_needed(order) {
                     gst::element_error!(
                         pipeline.pipeline,
                         gst::LibraryError::Failed,
@@ -157,10 +157,9 @@ impl WebRTCPipeline {
         Ok(pipeline)
     }
 
-    fn create_server() -> Result<Self, anyhow::Error> {
+    fn create_server(order: u8) -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
-            "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! vp8enc ! rtpvp8kpay !
-            application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
+            "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! vp8enc ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
         // let pipeline = gst::parse_launch(
@@ -191,7 +190,11 @@ impl WebRTCPipeline {
 
                 let pipeline = upgrade_weak!(pl_clone, None);
 
-                if let Err(err) = pipeline.on_ice_candidate("web_socket", mlineindex, candidate) {
+                if let Err(err) = pipeline.on_ice_candidate(
+                    &format!("web_socket_{}", order),
+                    mlineindex,
+                    candidate,
+                ) {
                     gst::element_error!(
                         pipeline.pipeline,
                         gst::LibraryError::Failed,
@@ -206,10 +209,10 @@ impl WebRTCPipeline {
         Ok(pipeline)
     }
 
-    pub fn init(type_: &WebRTCBinActorType) -> Result<Self, anyhow::Error> {
+    pub fn init(type_: &WebRTCBinActorType, order: u8) -> Result<Self, anyhow::Error> {
         match type_ {
-            &WebRTCBinActorType::Server => Self::create_server(),
-            &WebRTCBinActorType::Client => Self::create_client(),
+            &WebRTCBinActorType::Server => Self::create_server(order),
+            &WebRTCBinActorType::Client => Self::create_client(order),
         }
     }
 
@@ -227,7 +230,12 @@ impl WebRTCPipeline {
         Ok(())
     }
 
-    async fn handle_sdp(&self, type_: SDPType, sdp: SDPMessage) -> Result<(), anyhow::Error> {
+    async fn handle_sdp(
+        &self,
+        type_: SDPType,
+        sdp: SDPMessage,
+        order: u8,
+    ) -> Result<(), anyhow::Error> {
         match type_ {
             SDPType::Answer => {
                 let answer = SessionDescription::new(SDPType::Answer, sdp);
@@ -254,7 +262,7 @@ impl WebRTCPipeline {
                     let promise = gst::Promise::with_change_func(move |reply| {
                         let pipeline = upgrade_weak!(pl_clone);
 
-                        if let Err(err) = pipeline.on_answer_created(reply) {
+                        if let Err(err) = pipeline.on_answer_created(reply, order) {
                             gst::element_error!(
                                 pipeline.pipeline,
                                 gst::LibraryError::Failed,
@@ -276,7 +284,12 @@ impl WebRTCPipeline {
         }
     }
 
-    fn handle_ice(&self, mlineindex: u32, candidate: String) -> Result<(), anyhow::Error> {
+    fn handle_ice(
+        &self,
+        mlineindex: u32,
+        candidate: String,
+        order: u8,
+    ) -> Result<(), anyhow::Error> {
         self.webrtcbin
             .emit_by_name("add-ice-candidate", &[&mlineindex, &candidate])
             .expect("couldn't add ice candidate");
@@ -286,14 +299,14 @@ impl WebRTCPipeline {
         Ok(())
     }
 
-    fn on_negotiation_needed(&self) -> Result<(), anyhow::Error> {
+    fn on_negotiation_needed(&self, order: u8) -> Result<(), anyhow::Error> {
         println!("Starting negotiation");
 
         let pl_clone = self.downgrade();
         let promise = gst::Promise::with_change_func(move |reply| {
             let pipeline = upgrade_weak!(pl_clone);
 
-            if let Err(err) = pipeline.on_offer_created(reply) {
+            if let Err(err) = pipeline.on_offer_created(reply, order) {
                 gst::element_error!(
                     pipeline.pipeline,
                     gst::LibraryError::Failed,
@@ -312,6 +325,7 @@ impl WebRTCPipeline {
     fn on_offer_created(
         &self,
         reply: Result<Option<&gst::StructureRef>, gst::PromiseError>,
+        order: u8,
     ) -> Result<(), anyhow::Error> {
         let reply = match reply {
             Ok(Some(reply)) => reply,
@@ -334,7 +348,7 @@ impl WebRTCPipeline {
 
         let sdp = offer.sdp();
 
-        Distributor::named("server")
+        Distributor::named(format!("server_{}", order))
             .tell_one((SDPType::Offer, sdp))
             .expect("couldn't send SDP offer to server");
 
@@ -344,6 +358,7 @@ impl WebRTCPipeline {
     fn on_answer_created(
         &self,
         reply: Result<Option<&gst::StructureRef>, gst::PromiseError>,
+        order: u8,
     ) -> Result<(), anyhow::Error> {
         let reply = match reply {
             Ok(Some(reply)) => reply,
@@ -366,7 +381,7 @@ impl WebRTCPipeline {
 
         let sdp = answer.sdp();
 
-        Distributor::named("web_socket")
+        Distributor::named(format!("web_socket_{}", order))
             .tell_one((SDPType::Answer, sdp))
             .expect("couldn't send SDP answer to client");
 
@@ -495,27 +510,25 @@ fn main_loop(pipeline: WebRTCPipeline) -> Result<(), anyhow::Error> {
 pub struct WebRTCBinActor;
 
 impl WebRTCBinActor {
-    pub fn run(parent: SupervisorRef, type_: WebRTCBinActorType) {
+    pub fn run(parent: SupervisorRef, type_: WebRTCBinActorType, order: u8) {
         parent
             .supervisor(|s| {
                 s.with_restart_strategy(
-                    RestartStrategy::default()
-                        .with_restart_policy(RestartPolicy::Tries(5))
-                        .with_actor_restart_strategy(ActorRestartStrategy::Immediate),
+                    RestartStrategy::default().with_restart_policy(RestartPolicy::Never),
                 )
                 .children(move |c| {
-                    c.with_distributor(Distributor::named(type_.as_ref()))
-                        .with_exec(move |ctx| main_fn(ctx, type_))
+                    c.with_distributor(Distributor::named(format!("{}_{}", type_.as_ref(), order)))
+                        .with_exec(move |ctx| main_fn(ctx, type_, order))
                 })
             })
             .expect("couldn't run Gstreamer actor");
     }
 }
 
-async fn main_fn(ctx: BastionContext, type_: WebRTCBinActorType) -> Result<(), ()> {
-    println!("WebRTCBin {} started", type_.as_ref());
+async fn main_fn(ctx: BastionContext, type_: WebRTCBinActorType, order: u8) -> Result<(), ()> {
+    println!("WebRTCBin {}_{} started", type_.as_ref(), order);
     gst::init().expect("couldn't initialize gstreamer");
-    let pipeline = WebRTCPipeline::init(&type_).expect("couldn't create webrtcbin pipeline");
+    let pipeline = WebRTCPipeline::init(&type_, order).expect("couldn't create webrtcbin pipeline");
     pipeline.run().expect("couldn't start webrtc pipeline up");
     let pl_clone = pipeline.downgrade();
     blocking! {main_loop(pipeline)};
@@ -530,7 +543,7 @@ async fn main_fn(ctx: BastionContext, type_: WebRTCBinActorType) -> Result<(), (
                 run! { async {
                         let pipeline = upgrade_weak!(pl_clone);
                         pipeline
-                            .handle_sdp(sdp_type, sdp)
+                            .handle_sdp(sdp_type, sdp, order)
                             .await
                             .expect("couldn't handle sdp");
                     }
@@ -540,7 +553,7 @@ async fn main_fn(ctx: BastionContext, type_: WebRTCBinActorType) -> Result<(), (
                 println!("{} candidate received: {:?}", type_.as_ref(), ice_candidate);
                 let pipeline = upgrade_weak!(pl_clone);
                 pipeline
-                    .handle_ice(ice_candidate.0, ice_candidate.1)
+                    .handle_ice(ice_candidate.0, ice_candidate.1, order)
                     .expect("couldn't handle sdp");
             });
     }

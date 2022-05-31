@@ -20,11 +20,16 @@ async fn main() {
     Bastion::init();
     Bastion::start();
 
-    let server_parent = Bastion::supervisor(|s| s).unwrap();
-    WebRTCBinActor::run(server_parent, WebRTCBinActorType::Server);
+    for i in 1..=7 {
+        if i == 3 {
+            continue;
+        }
+        let server_parent = Bastion::supervisor(|s| s).unwrap();
+        WebRTCBinActor::run(server_parent, WebRTCBinActorType::Server, i);
 
-    let ws_server = Bastion::supervisor(|s| s).unwrap();
-    WsActor::run(ws_server);
+        let ws_server = Bastion::supervisor(|s| s).unwrap();
+        WsActor::run(ws_server, i);
+    }
 
     Bastion::block_until_stopped();
 }
