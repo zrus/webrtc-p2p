@@ -159,7 +159,7 @@ impl WebRTCPipeline {
 
     fn create_server(order: u8) -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
-            "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! x264enc ! rtph264pay ! application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! webrtcbin.",
+            "webrtcbin name=webrtcbin message-forward=true videotestsrc pattern=ball is-live=true ! x264enc ! video/x-h264,profile-level-id=42e01f ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000 ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
         // let pipeline = gst::parse_launch(
@@ -173,8 +173,24 @@ impl WebRTCPipeline {
             .expect("couldn't downcast pipeline");
 
         let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
-        webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
+        // webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
+        webrtcbin.set_property_from_str(
+            "turn-server",
+            "turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp",
+        );
         webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
+
+        // if let Some(transceiver) = webrtcbin
+        //     .emit_by_name("get-transceiver", &[&0.to_value()])
+        //     .unwrap()
+        //     .and_then(|val| val.get::<gst_webrtc::WebRTCRTPTransceiver>().ok())
+        // {
+        //     transceiver.set_property("do-nack", &false.to_value())?;
+        //     transceiver.set_property(
+        //         "direction",
+        //         (gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly).to_value(),
+        //     )?;
+        // }
 
         let pipeline = Self(Arc::new(WebRTCPipelineInner {
             pipeline,
@@ -499,6 +515,9 @@ fn main_loop(pipeline: WebRTCPipeline) -> Result<(), anyhow::Error> {
                 println!(" ========================================= ");
                 return Ok(());
             }
+            MessageView::Element(elm) => {
+                println!("Element: {:?}", elm);
+            }
             _ => (),
         }
     }
@@ -534,11 +553,7 @@ async fn main_fn(ctx: BastionContext, type_: WebRTCBinActorType, order: u8) -> R
     loop {
         MessageHandler::new(ctx.recv().await?)
             .on_tell(|(sdp_type, sdp): (SDPType, SDPMessage), _| {
-                println!(
-                    "{} sdp received: {}",
-                    type_.as_ref(),
-                    sdp.as_text().unwrap()
-                );
+                println!("{} RECEIVED:\n{}", type_.as_ref(), sdp.as_text().unwrap());
                 run! { async {
                         let pipeline = upgrade_weak!(pl_clone);
                         pipeline
@@ -549,7 +564,7 @@ async fn main_fn(ctx: BastionContext, type_: WebRTCBinActorType, order: u8) -> R
                 }
             })
             .on_tell(|ice_candidate: (u32, String), _| {
-                println!("{} candidate received: {:?}", type_.as_ref(), ice_candidate);
+                println!("{} RECEIVED:\n{:?}", type_.as_ref(), ice_candidate);
                 let pipeline = upgrade_weak!(pl_clone);
                 pipeline
                     .handle_ice(ice_candidate.0, ice_candidate.1, order)

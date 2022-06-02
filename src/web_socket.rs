@@ -109,7 +109,7 @@ async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
     loop {
         MessageHandler::new(ctx.recv().await?)
             .on_tell(|(sdp_type, sdp): (SDPType, SDPMessage), _| {
-                println!("prepare to send sdp: {}", sdp.as_text().unwrap());
+                println!("SEND:\n{}", sdp.as_text().unwrap());
                 let msg = serde_json::to_string(&JsonMsg::Sdp {
                     type_: sdp_type.to_str().to_owned(),
                     sdp: sdp.as_text().unwrap(),
@@ -118,7 +118,7 @@ async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
                 send_ws_msg_tx.unbounded_send(WsMessage::Text(msg));
             })
             .on_tell(|(mlineindex, candidate): (u32, String), _| {
-                println!("prepare to send ice candidate: {}", candidate);
+                println!("SEND:\t{}", candidate);
                 let msg = serde_json::to_string(&JsonMsg::Ice {
                     candidate,
                     sdp_mline_index: mlineindex,
