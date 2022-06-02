@@ -8,7 +8,7 @@ use tokio::{net::UdpSocket, select};
 use webrtc::{
     api::{
         interceptor_registry::register_default_interceptors,
-        media_engine::{MediaEngine, MIME_TYPE_VP8},
+        media_engine::{MediaEngine, MIME_TYPE_VP8, MIME_TYPE_H264},
         APIBuilder,
     },
     ice_transport::{ice_connection_state::RTCIceConnectionState, ice_server::RTCIceServer},
@@ -65,7 +65,9 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
 
     let config = RTCConfiguration {
         ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+            urls: vec!["turn:turn.tel4vn.com:5349?transport=tcp".to_owned()],
+            username: "tel4vn".to_owned(),
+            credential: "TEL4VN.COM".to_owned(),
             ..Default::default()
         }],
         ..Default::default()
@@ -79,7 +81,7 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
 
     let video_track = Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
-            mime_type: MIME_TYPE_VP8.to_owned(),
+            mime_type: MIME_TYPE_H264.to_owned(),
             ..Default::default()
         },
         "video".to_owned(),
@@ -184,9 +186,6 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
     select! {
         _ = done_rx.recv() => {
             println!("received done signal!");
-        }
-        _ = tokio::signal::ctrl_c() => {
-            println!("");
         }
     };
 
