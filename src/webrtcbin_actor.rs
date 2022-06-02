@@ -159,11 +159,11 @@ impl WebRTCPipeline {
 
     fn create_server(order: u8) -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
-            "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! vp8enc ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
+            "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! x264enc ! rtph264pay ! application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
         // let pipeline = gst::parse_launch(
-        //     "webrtcbin name=webrtcbin rtspsrc location=rtsp://test:test123@192.168.1.12:88/videoMain is-live=true !
+        //     "webrtcbin name=webrtcbin rtspsrc location=rtsp://test:test123@192.168.1.11:88/videoMain is-live=true !
         //     application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! webrtcbin.",
         // )
         // .expect("couldn't parse pipeline from string");
@@ -483,7 +483,6 @@ fn main_loop(pipeline: WebRTCPipeline) -> Result<(), anyhow::Error> {
 
     for msg in bus.iter_timed(gst::ClockTime::NONE) {
         use gst::message::MessageView;
-        println!(".");
         match msg.view() {
             MessageView::Error(err) => bail!(
                 "Error from element {}: {} ({})",
