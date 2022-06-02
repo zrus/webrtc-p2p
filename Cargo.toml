@@ -25,6 +25,8 @@ tokio = { version = "*", features = ["full"] }
 tokio-util = { version = "*", features = ["full"] }
 
 bastion = { git = "https://github.com/bastion-rs/bastion.git", features = ["tokio-runtime"] }
+futures = "*"
+async_tungstenite = "*"
 
 gst = { package = "gstreamer", version = "0.17", features = ["v1_14"] }
 gst-sdp = { package = "gstreamer-sdp", version = "0.17", features = ["v1_14"] }

@@ -9,6 +9,7 @@ mod sendrecv;
 mod utils;
 mod webrtc_actor;
 mod webrtcbin_actor;
+mod web_socket;
 
 use anyhow::Result;
 use bastion::prelude::*;
