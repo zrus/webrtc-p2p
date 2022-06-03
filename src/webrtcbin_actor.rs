@@ -159,7 +159,11 @@ impl WebRTCPipeline {
 
     fn create_server(order: u8) -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
-            "webrtcbin name=webrtcbin message-forward=true videotestsrc pattern=ball is-live=true ! x264enc ! video/x-h264,profile-level-id=42e01f ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000 ! webrtcbin.",
+            "webrtcbin name=webrtcbin message-forward=true turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle 
+            videotestsrc pattern=ball is-live=true ! video/x-raw,width=1280,height=720 ! videoconvert ! 
+            x264enc threads=4 bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! 
+            video/x-h264,profile=constrained-baseline ! h264parse ! rtph264pay config-interval=1 ! 
+            application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000,aggregate-mode=zero-latency,profile-level-id=42e01f ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
         // let pipeline = gst::parse_launch(
@@ -173,12 +177,6 @@ impl WebRTCPipeline {
             .expect("couldn't downcast pipeline");
 
         let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
-        // webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
-        webrtcbin.set_property_from_str(
-            "turn-server",
-            "turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp",
-        );
-        webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
 
         // if let Some(transceiver) = webrtcbin
         //     .emit_by_name("get-transceiver", &[&0.to_value()])
@@ -309,9 +307,9 @@ impl WebRTCPipeline {
         self.webrtcbin
             .emit_by_name("add-ice-candidate", &[&mlineindex, &candidate])
             .expect("couldn't add ice candidate");
-        let property = self.webrtcbin.property("ice-connection-state")?;
-        let ice_state = property.get::<gst_webrtc::WebRTCICEConnectionState>()?;
-        println!("\n==========           ice state: {:?}\n", ice_state);
+        // let property = self.webrtcbin.property("ice-connection-state")?;
+        // let ice_state = property.get::<gst_webrtc::WebRTCICEConnectionState>()?;
+        // println!("\n==========           ice state: {:?}\n", ice_state);
         Ok(())
     }
 
@@ -555,13 +553,12 @@ async fn main_fn(ctx: BastionContext, type_: WebRTCBinActorType, order: u8) -> R
             .on_tell(|(sdp_type, sdp): (SDPType, SDPMessage), _| {
                 println!("{} RECEIVED:\n{}", type_.as_ref(), sdp.as_text().unwrap());
                 run! { async {
-                        let pipeline = upgrade_weak!(pl_clone);
-                        pipeline
-                            .handle_sdp(sdp_type, sdp, order)
-                            .await
-                            .expect("couldn't handle sdp");
-                    }
-                }
+                    let pipeline = upgrade_weak!(pl_clone);
+                    pipeline
+                        .handle_sdp(sdp_type, sdp, order)
+                        .await
+                        .expect("couldn't handle sdp");
+                }}
             })
             .on_tell(|ice_candidate: (u32, String), _| {
                 println!("{} RECEIVED:\n{:?}", type_.as_ref(), ice_candidate);
