@@ -11,8 +11,7 @@ impl GstreamerActor {
             .supervisor(|s| {
                 s.with_restart_strategy(
                     RestartStrategy::default()
-                        .with_restart_policy(RestartPolicy::Tries(5))
-                        .with_actor_restart_strategy(ActorRestartStrategy::Immediate),
+                        .with_restart_policy(RestartPolicy::Never)
                 )
                 .children(|c| {
                     c.with_exec(|_| async {

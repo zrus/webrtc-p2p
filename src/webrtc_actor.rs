@@ -29,7 +29,7 @@ use crate::gstreamer_actor::GstreamerActor;
 pub struct WebRtcActor;
 
 impl WebRtcActor {
-    pub fn run(parent: SupervisorRef, sdp: &str) {
+    pub fn run(parent: SupervisorRef, sdp: &str, i: u8) {
         let sdp = sdp.to_owned();
         parent
             .supervisor(|s| {
@@ -65,7 +65,7 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
 
     let config = RTCConfiguration {
         ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+            urls: vec!["stun://stun.l.google.com:19302".to_owned()],
             ..Default::default()
         }],
         ..Default::default()

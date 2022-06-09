@@ -13,6 +13,7 @@ mod webrtcbin_actor;
 use anyhow::Result;
 use bastion::prelude::*;
 use web_socket::WsActor;
+use webrtc_actor::WebRtcActor;
 use webrtcbin_actor::{WebRTCBinActor, WebRTCBinActorType};
 
 #[tokio::main]
@@ -24,8 +25,6 @@ async fn main() {
         if i == 3 {
             continue;
         }
-        let server_parent = Bastion::supervisor(|s| s).unwrap();
-        WebRTCBinActor::run(server_parent, WebRTCBinActorType::Server, i);
 
         let ws_server = Bastion::supervisor(|s| s).unwrap();
         WsActor::run(ws_server, i);
@@ -55,17 +54,17 @@ fn main_fn() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-#[cfg(any(not(feature = "webrtcbin"), feature = "webrtc-rs"))]
-fn main_fn() -> Result<(), anyhow::Error> {
-    use webrtc_actor::WebRtcActor;
+// #[cfg(any(not(feature = "webrtcbin"), feature = "webrtc-rs"))]
+// fn main_fn() -> Result<(), anyhow::Error> {
+//     use webrtc_actor::WebRtcActor;
 
-    let mut line = String::new();
+//     let mut line = String::new();
 
-    std::io::stdin().read_line(&mut line)?;
-    line = line.trim().to_owned();
+//     std::io::stdin().read_line(&mut line)?;
+//     line = line.trim().to_owned();
 
-    let parent = Bastion::supervisor(|s| s).unwrap();
-    WebRtcActor::run(parent, &line);
+//     let parent = Bastion::supervisor(|s| s).unwrap();
+//     WebRtcActor::run(parent, &line);
 
-    Ok(())
-}
+//     Ok(())
+// }

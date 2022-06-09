@@ -1,4 +1,4 @@
-use bastion::blocking;
+use bastion::{blocking, Bastion};
 use bastion::context::BastionContext;
 use bastion::distributor::Distributor;
 use bastion::message::MessageHandler;
@@ -16,6 +16,7 @@ use async_tungstenite::tungstenite::Message as WsMessage;
 use anyhow::{anyhow, bail, Context};
 use serde::{Deserialize, Serialize};
 
+use crate::webrtc_actor::WebRtcActor;
 use crate::webrtcbin_actor::SDPType;
 
 const WS_SERVER: &str = "wss://webrtc.nirbheek.in:8443";
@@ -68,13 +69,10 @@ impl WsActor {
                     "answer" => SDPType::Answer,
                     _ => bail!("sdp type not supported"),
                 };
-                let sdp = SDPMessage::parse_buffer(sdp.as_bytes())?;
-                webrtcbin.tell_one((type_, sdp))
+                let server_parent = Bastion::supervisor(|s| s).unwrap();
+                WebRtcActor::run(server_parent, &sdp, order);
             }
-            JsonMsg::Ice {
-                sdp_mline_index,
-                candidate,
-            } => webrtcbin.tell_one((sdp_mline_index, candidate)),
+            _ => {},
         };
 
         Ok(())
