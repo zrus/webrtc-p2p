@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use bastion::{
     spawn,
-    supervisor::{RestartPolicy, RestartStrategy, SupervisorRef},
+    supervisor::{RestartPolicy, RestartStrategy, SupervisorRef}, distributor::Distributor, context::BastionContext, message::MessageHandler, run,
 };
 use tokio::{net::UdpSocket, select};
 use webrtc::{
     api::{
         interceptor_registry::register_default_interceptors,
-        media_engine::{MediaEngine, MIME_TYPE_VP8},
+        media_engine::{MediaEngine, MIME_TYPE_VP8, MIME_TYPE_H264},
         APIBuilder,
     },
-    ice_transport::{ice_connection_state::RTCIceConnectionState, ice_server::RTCIceServer},
+    ice_transport::{ice_connection_state::RTCIceConnectionState, ice_server::RTCIceServer, ice_candidate::{RTCIceCandidate, RTCIceCandidateInit}},
     interceptor::registry::Registry,
     peer_connection::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
@@ -24,7 +24,7 @@ use webrtc::{
     Error,
 };
 
-use crate::gstreamer_actor::GstreamerActor;
+use crate::{gstreamer_actor::GstreamerActor, webrtcbin_actor::SDPType};
 
 pub struct WebRtcActor;
 
@@ -38,11 +38,12 @@ impl WebRtcActor {
                                                                                           // .with_actor_restart_strategy(ActorRestartStrategy::Immediate),
                 )
                 .children(|c| {
-                    c.with_exec(move |ctx| {
+                    c.with_distributor(Distributor::named(format!("webrtc_{i}")))
+                    .with_exec(move |ctx| {
                         println!("WebRTC started");
                         let sdp = sdp.clone();
-                        GstreamerActor::run(ctx.supervisor().unwrap().supervisor(|s| s).unwrap());
-                        main_fn(sdp)
+                        GstreamerActor::run(ctx.supervisor().unwrap().supervisor(|s| s).unwrap(), i);
+                        main_fn(sdp, i, ctx)
                     })
                 })
             })
@@ -50,7 +51,7 @@ impl WebRtcActor {
     }
 }
 
-async fn main_fn(sdp: String) -> Result<(), ()> {
+async fn main_fn(sdp: String, i: u8, ctx: BastionContext) -> Result<(), ()> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()
         .expect("couldn't register default codec");
@@ -65,7 +66,7 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
 
     let config = RTCConfiguration {
         ice_servers: vec![RTCIceServer {
-            urls: vec!["stun://stun.l.google.com:19302".to_owned()],
+            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
             ..Default::default()
         }],
         ..Default::default()
@@ -79,7 +80,7 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
 
     let video_track = Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
-            mime_type: MIME_TYPE_VP8.to_owned(),
+            mime_type: MIME_TYPE_H264.to_owned(),
             ..Default::default()
         },
         "video".to_owned(),
@@ -125,10 +126,40 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
         }))
         .await;
 
-    let bdata = base64::decode(sdp).expect("couldn't decode SDP");
-    let desc_data = String::from_utf8(bdata).expect("couldn't create string from utf8");
+    let pc = Arc::downgrade(&peer_connection);
+    peer_connection.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
+        let pc = pc.clone();
+        Box::pin(async move {
+            if let Some(c) = c {
+                if let Some(pc) = pc.upgrade() {
+                    let desc = pc.remote_description().await;
+                    if desc.is_some() {
+                        let candidate = c.to_json().await.unwrap();
+                        let json_ice = serde_json::to_string(&candidate).unwrap();
+                        Distributor::named(format!("web_socket_{i}")).tell_one((0u32, json_ice)).expect("couldn't send ICE to peer");
+                    }
+                }
+            }
+        })
+    })).await;
+
+    let pc = Arc::downgrade(&peer_connection);
+    spawn!(async move {
+        loop {
+            let pc = pc.clone();
+            MessageHandler::new(ctx.recv().await.unwrap()).on_tell(|(candidate, sdp_mline_index): (String, u32), _| {
+                run!(async {
+                    let candidate = serde_json::from_str::<RTCIceCandidateInit>(&candidate).unwrap();
+                    if let Some(pc) = pc.upgrade() {
+                        pc.add_ice_candidate(candidate).await.unwrap();
+                }});
+            });
+        }
+    });
+
+    println!("received: {sdp}");
     let offer =
-        serde_json::from_str::<RTCSessionDescription>(&desc_data).expect("couldn't deserialize");
+        serde_json::from_str::<RTCSessionDescription>(&sdp).expect("couldn't deserialize");
 
     peer_connection
         .set_remote_description(offer)
@@ -152,9 +183,7 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
     if let Some(local_desc) = peer_connection.local_description().await {
         let json_str = serde_json::to_string(&local_desc)
             .expect("couldn't deserialize local description to string");
-        let b64 = base64::encode(&json_str);
-        println!("{}", json_str);
-        println!("{}", b64);
+            Distributor::named(format!("web_socket_{i}")).tell_one((SDPType::Answer, json_str)).expect("couldn't send SDP a to peer");
     } else {
         println!("generate local_description failed!");
     }
@@ -184,9 +213,6 @@ async fn main_fn(sdp: String) -> Result<(), ()> {
     select! {
         _ = done_rx.recv() => {
             println!("received done signal!");
-        }
-        _ = tokio::signal::ctrl_c() => {
-            println!("");
         }
     };
 

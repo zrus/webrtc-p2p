@@ -58,21 +58,18 @@ impl WsActor {
             bail!("Got error message: {}", msg);
         }
 
-        let json_msg: JsonMsg = serde_json::from_str(msg)?;
-
-        let webrtcbin = Distributor::named(format!("server_{}", order));
+        let json_msg: JsonMsg = serde_json::from_str(&msg)?;
 
         match json_msg {
             JsonMsg::Sdp { type_, sdp } => {
-                let type_ = match type_.as_str() {
-                    "offer" => SDPType::Offer,
-                    "answer" => SDPType::Answer,
-                    _ => bail!("sdp type not supported"),
-                };
-                let server_parent = Bastion::supervisor(|s| s).unwrap();
-                WebRtcActor::run(server_parent, &sdp, order);
+                if &type_ == "offer" {
+                    let server_parent = Bastion::supervisor(|s| s).unwrap();
+                    WebRtcActor::run(server_parent, &msg, order);
+                }
             }
-            _ => {},
+            JsonMsg::Ice { candidate, sdp_mline_index } => {
+                Distributor::named(format!("webrtc_{order}")).tell_one((candidate, sdp_mline_index)).expect("couldn't send ICE to WebRTC actor");
+            }
         };
 
         Ok(())
@@ -104,13 +101,14 @@ async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
 
     blocking!(run(send_ws_msg_rx, ws, order).await);
 
+    println!("WsActor_{order} started!");
     loop {
         MessageHandler::new(ctx.recv().await?)
-            .on_tell(|(sdp_type, sdp): (SDPType, SDPMessage), _| {
-                println!("SEND:\n{}", sdp.as_text().unwrap());
+            .on_tell(|(sdp_type, sdp): (SDPType, String), _| {
+                println!("SEND:\n{}", sdp);
                 let msg = serde_json::to_string(&JsonMsg::Sdp {
                     type_: sdp_type.to_str().to_owned(),
-                    sdp: sdp.as_text().unwrap(),
+                    sdp,
                 })
                 .unwrap();
                 send_ws_msg_tx.unbounded_send(WsMessage::Text(msg));
