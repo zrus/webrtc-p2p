@@ -21,7 +21,7 @@ async fn main() {
     Bastion::init();
     Bastion::start();
 
-    for i in 1..=2 {
+    for i in 1..=5 {
         if i == 3 {
             continue;
         }

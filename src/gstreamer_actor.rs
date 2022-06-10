@@ -15,9 +15,7 @@ impl GstreamerActor {
                 )
                 .children(|c| {
                     c.with_exec(move |_| async move {
-                        let main_context = glib::MainContext::default();
-                        main_context.block_on(main_fn(i));
-                        loop {}
+                        main_fn(i).await
                     })
                 })
             })
@@ -25,7 +23,7 @@ impl GstreamerActor {
     }
 }
 
-async fn main_fn(i: u8) {
+async fn main_fn(i: u8) -> Result<(), ()> {
     println!("Gstreamer started");
 
     gst::init().expect("couldn't initialize gstreamer");
@@ -35,4 +33,5 @@ async fn main_fn(i: u8) {
     pipeline.run().expect("couldn't run pipeline on");
 
     loop {}
+    Ok(())
 }

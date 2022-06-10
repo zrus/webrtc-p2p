@@ -15,19 +15,22 @@ use async_tungstenite::tungstenite::Message as WsMessage;
 
 use anyhow::{anyhow, bail, Context};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::webrtc_actor::WebRtcActor;
 use crate::webrtcbin_actor::SDPType;
 
-const WS_SERVER: &str = "wss://webrtc.nirbheek.in:8443";
+const WS_SERVER: &str = "wss://192.168.1.21:8443";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
 enum JsonMsg {
     Ice {
         candidate: String,
         #[serde(rename = "sdpMLineIndex")]
-        sdp_mline_index: u32,
+        sdp_mline_index: u16,
+        #[serde(rename = "sdpMid")]
+        sdp_mid: String,
     },
     Sdp {
         #[serde(rename = "type")]
@@ -59,16 +62,27 @@ impl WsActor {
         }
 
         let json_msg: JsonMsg = serde_json::from_str(&msg)?;
+        println!("{json_msg:?}");
 
         match json_msg {
             JsonMsg::Sdp { type_, sdp } => {
+                let msg = json!({
+                    "type": type_,
+                    "sdp": sdp
+                });
                 if &type_ == "offer" {
                     let server_parent = Bastion::supervisor(|s| s).unwrap();
-                    WebRtcActor::run(server_parent, &msg, order);
+                    WebRtcActor::run(server_parent, &msg.to_string(), order);
                 }
             }
-            JsonMsg::Ice { candidate, sdp_mline_index } => {
-                Distributor::named(format!("webrtc_{order}")).tell_one((candidate, sdp_mline_index)).expect("couldn't send ICE to WebRTC actor");
+            JsonMsg::Ice { candidate, sdp_mline_index, sdp_mid } => {
+                let msg = json!({
+                    "candidate": candidate,
+                    "sdp_mid": sdp_mid,
+                    "sdp_mline_index": sdp_mline_index,
+                    "username_fragment": String::new()
+                });
+                Distributor::named(format!("webrtc_{order}")).tell_one((candidate, sdp_mline_index, sdp_mid)).expect("couldn't send ICE to WebRTC actor");
             }
         };
 
@@ -77,7 +91,7 @@ impl WsActor {
 }
 
 async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
-    let (mut ws, _) = async_tungstenite::async_std::connect_async(WS_SERVER)
+    let (mut ws, _) = async_tungstenite::async_std::connect_async_with_tls_connector(WS_SERVER, None)
         .await
         .map_err(|e| eprintln!("{}", e))?;
 
@@ -105,21 +119,22 @@ async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
     loop {
         MessageHandler::new(ctx.recv().await?)
             .on_tell(|(sdp_type, sdp): (SDPType, String), _| {
-                println!("SEND:\n{}", sdp);
                 let msg = serde_json::to_string(&JsonMsg::Sdp {
                     type_: sdp_type.to_str().to_owned(),
                     sdp,
                 })
                 .unwrap();
+                println!("SEND:\n{msg}");
                 send_ws_msg_tx.unbounded_send(WsMessage::Text(msg));
             })
-            .on_tell(|(mlineindex, candidate): (u32, String), _| {
-                println!("SEND:\t{}", candidate);
+            .on_tell(|(sdp_mline_index, candidate, sdp_mid): (u16, String, String), _| {
                 let msg = serde_json::to_string(&JsonMsg::Ice {
                     candidate,
-                    sdp_mline_index: mlineindex,
+                    sdp_mline_index,
+                    sdp_mid
                 })
                 .unwrap();
+                println!("SEND:\t{msg}");
                 send_ws_msg_tx.unbounded_send(WsMessage::Text(msg));
             });
     }

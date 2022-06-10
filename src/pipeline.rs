@@ -58,24 +58,16 @@ impl Pipeline {
 
 impl Pipeline {
     pub fn init(i: u8) -> Result<Self, anyhow::Error> {
+        println!("Pipeline started {i}");
         let pipeline = gst::parse_launch(
-            &format!("videotestsrc pattern=ball is-live=true ! x264enc ! rtph264pay ! udpsink host=127.0.0.1 port=500{i}")
+            &format!("videotestsrc pattern=ball is-live=true ! videoconvert ! x264enc ! 
+            rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000 ! udpsink host=127.0.0.1 port=500{i}")
         )
         .expect("couldn't parse pipeline from string");
 
         let pipeline = pipeline
             .downcast::<gst::Pipeline>()
             .expect("couldn't downcast pipeline");
-
-        let bus = pipeline.bus().unwrap();
-
-        bus.add_watch_local(move |_, msg| {
-            if handle_pipeline_msg(msg).is_err() {
-                return glib::Continue(false);
-            }
-            glib::Continue(true)
-        })
-        .expect("couldn't add bus watch");
 
         Ok(Self(Arc::new(PipelineInner { pipeline })))
     }
@@ -95,21 +87,21 @@ impl Pipeline {
     }
 }
 
-fn handle_pipeline_msg(msg: &gst::Message) -> Result<(), anyhow::Error> {
-    use gst::message::MessageView;
-    match msg.view() {
-        MessageView::Error(err) => bail!(
-            "Error from element {}: {} ({})",
-            err.src()
-                .map(|s| String::from(s.path_string()))
-                .unwrap_or_else(|| String::from("None")),
-            err.error(),
-            err.debug().unwrap_or_else(|| String::from("None")),
-        ),
-        MessageView::Warning(warning) => {
-            println!("Warning: \"{}\"", warning.debug().unwrap());
-        }
-        _ => (),
-    }
-    Ok(())
-}
+// fn handle_pipeline_msg(msg: &gst::Message) -> Result<(), anyhow::Error> {
+//     use gst::message::MessageView;
+//     match msg.view() {
+//         MessageView::Error(err) => bail!(
+//             "Error from element {}: {} ({})",
+//             err.src()
+//                 .map(|s| String::from(s.path_string()))
+//                 .unwrap_or_else(|| String::from("None")),
+//             err.error(),
+//             err.debug().unwrap_or_else(|| String::from("None")),
+//         ),
+//         MessageView::Warning(warning) => {
+//             println!("Warning: \"{}\"", warning.debug().unwrap());
+//         }
+//         _ => (),
+//     }
+//     Ok(())
+// }

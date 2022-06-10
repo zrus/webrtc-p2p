@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use bastion::{
     spawn,
-    supervisor::{RestartPolicy, RestartStrategy, SupervisorRef}, distributor::Distributor, context::BastionContext, message::MessageHandler, run,
+    supervisor::{RestartPolicy, RestartStrategy, SupervisorRef}, distributor::Distributor, context::BastionContext, message::MessageHandler, blocking, run,
 };
 use tokio::{net::UdpSocket, select};
 use webrtc::{
     api::{
         interceptor_registry::register_default_interceptors,
-        media_engine::{MediaEngine, MIME_TYPE_VP8, MIME_TYPE_H264},
+        media_engine::{MediaEngine, MIME_TYPE_H264},
         APIBuilder,
     },
     ice_transport::{ice_connection_state::RTCIceConnectionState, ice_server::RTCIceServer, ice_candidate::{RTCIceCandidate, RTCIceCandidateInit}},
@@ -78,6 +78,21 @@ async fn main_fn(sdp: String, i: u8, ctx: BastionContext) -> Result<(), ()> {
             .expect("couldn't create new peer connection"),
     );
 
+    let pc = Arc::downgrade(&peer_connection);
+    blocking!(async move {
+        loop {
+            let pc = pc.clone();
+            MessageHandler::new(ctx.recv().await.unwrap()).on_tell(|candidate: String, _| {
+                println!("RECEIVED: {candidate}");
+                run!(async {
+                    let candidate = serde_json::from_str::<RTCIceCandidateInit>(&candidate).unwrap();
+                    if let Some(pc) = pc.upgrade() {
+                        pc.add_ice_candidate(candidate).await.unwrap();
+                }});
+            });
+        }
+    });
+
     let video_track = Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_H264.to_owned(),
@@ -135,27 +150,16 @@ async fn main_fn(sdp: String, i: u8, ctx: BastionContext) -> Result<(), ()> {
                     let desc = pc.remote_description().await;
                     if desc.is_some() {
                         let candidate = c.to_json().await.unwrap();
-                        let json_ice = serde_json::to_string(&candidate).unwrap();
-                        Distributor::named(format!("web_socket_{i}")).tell_one((0u32, json_ice)).expect("couldn't send ICE to peer");
+                        let mline_index = candidate.sdp_mline_index;
+                        let sdp_mid = candidate.sdp_mid;
+                        let candidate = candidate.candidate;
+                        println!("send ice: {candidate}");
+                        Distributor::named(format!("web_socket_{i}")).tell_one((mline_index, candidate, sdp_mid)).expect("couldn't send ICE to peer");
                     }
                 }
             }
         })
     })).await;
-
-    let pc = Arc::downgrade(&peer_connection);
-    spawn!(async move {
-        loop {
-            let pc = pc.clone();
-            MessageHandler::new(ctx.recv().await.unwrap()).on_tell(|(candidate, sdp_mline_index): (String, u32), _| {
-                run!(async {
-                    let candidate = serde_json::from_str::<RTCIceCandidateInit>(&candidate).unwrap();
-                    if let Some(pc) = pc.upgrade() {
-                        pc.add_ice_candidate(candidate).await.unwrap();
-                }});
-            });
-        }
-    });
 
     println!("received: {sdp}");
     let offer =
@@ -181,9 +185,8 @@ async fn main_fn(sdp: String, i: u8, ctx: BastionContext) -> Result<(), ()> {
     let _ = gather_complete.recv().await;
 
     if let Some(local_desc) = peer_connection.local_description().await {
-        let json_str = serde_json::to_string(&local_desc)
-            .expect("couldn't deserialize local description to string");
-            Distributor::named(format!("web_socket_{i}")).tell_one((SDPType::Answer, json_str)).expect("couldn't send SDP a to peer");
+        let json_str = local_desc.sdp;
+        Distributor::named(format!("web_socket_{i}")).tell_one((SDPType::Answer, json_str)).expect("couldn't send SDP a to peer");
     } else {
         println!("generate local_description failed!");
     }
@@ -194,9 +197,11 @@ async fn main_fn(sdp: String, i: u8, ctx: BastionContext) -> Result<(), ()> {
 
     let done_tx3 = done_tx.clone();
 
-    spawn!(async move {
+    let handler = spawn!(async move {
         let mut inbound_rtp_packet = vec![0u8; 1600]; // UDP MTU
+        println!("cho nhan data neeeeee");
         while let Ok((n, _)) = listener.recv_from(&mut inbound_rtp_packet).await {
+            // println!("data neeeee {i}{i}{i}{i}");
             if let Err(err) = video_track.write(&inbound_rtp_packet[..n]).await {
                 if Error::ErrClosedPipe == err {
                     // The peerConnection has been closed.
@@ -212,9 +217,11 @@ async fn main_fn(sdp: String, i: u8, ctx: BastionContext) -> Result<(), ()> {
     println!("Press ctrl-c to stop");
     select! {
         _ = done_rx.recv() => {
-            println!("received done signal!");
+            println!("received done signal! {i}");
         }
     };
+
+    handler.cancel();
 
     peer_connection
         .close()
