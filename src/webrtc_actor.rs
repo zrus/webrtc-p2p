@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
 use bastion::{
-    spawn,
-    supervisor::{RestartPolicy, RestartStrategy, SupervisorRef}, distributor::Distributor, context::BastionContext, message::MessageHandler, blocking, run,
+    blocking,
+    context::BastionContext,
+    distributor::Distributor,
+    message::MessageHandler,
+    run, spawn,
+    supervisor::{RestartPolicy, RestartStrategy, SupervisorRef},
 };
 use tokio::{net::UdpSocket, select};
 use webrtc::{
@@ -11,7 +15,11 @@ use webrtc::{
         media_engine::{MediaEngine, MIME_TYPE_H264},
         APIBuilder,
     },
-    ice_transport::{ice_connection_state::RTCIceConnectionState, ice_server::RTCIceServer, ice_candidate::{RTCIceCandidate, RTCIceCandidateInit}},
+    ice_transport::{
+        ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
+        ice_connection_state::RTCIceConnectionState,
+        ice_server::RTCIceServer,
+    },
     interceptor::registry::Registry,
     peer_connection::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
@@ -34,17 +42,19 @@ impl WebRtcActor {
         parent
             .supervisor(|s| {
                 s.with_restart_strategy(
-                    RestartStrategy::default().with_restart_policy(RestartPolicy::Never), // .with_restart_policy(RestartPolicy::Tries(5))
-                                                                                          // .with_actor_restart_strategy(ActorRestartStrategy::Immediate),
+                    RestartStrategy::default().with_restart_policy(RestartPolicy::Never),
                 )
                 .children(|c| {
                     c.with_distributor(Distributor::named(format!("webrtc_{i}")))
-                    .with_exec(move |ctx| {
-                        println!("WebRTC started");
-                        let sdp = sdp.clone();
-                        GstreamerActor::run(ctx.supervisor().unwrap().supervisor(|s| s).unwrap(), i);
-                        main_fn(sdp, i, ctx)
-                    })
+                        .with_exec(move |ctx| {
+                            println!("WebRTC started");
+                            let sdp = sdp.clone();
+                            GstreamerActor::run(
+                                ctx.supervisor().unwrap().supervisor(|s| s).unwrap(),
+                                i,
+                            );
+                            main_fn(sdp, i, ctx)
+                        })
                 })
             })
             .expect("couldn't run WebRTC actor");
@@ -85,10 +95,12 @@ async fn main_fn(sdp: String, i: u8, ctx: BastionContext) -> Result<(), ()> {
             MessageHandler::new(ctx.recv().await.unwrap()).on_tell(|candidate: String, _| {
                 println!("RECEIVED: {candidate}");
                 run!(async {
-                    let candidate = serde_json::from_str::<RTCIceCandidateInit>(&candidate).unwrap();
+                    let candidate =
+                        serde_json::from_str::<RTCIceCandidateInit>(&candidate).unwrap();
                     if let Some(pc) = pc.upgrade() {
                         pc.add_ice_candidate(candidate).await.unwrap();
-                }});
+                    }
+                });
             });
         }
     });
@@ -142,28 +154,31 @@ async fn main_fn(sdp: String, i: u8, ctx: BastionContext) -> Result<(), ()> {
         .await;
 
     let pc = Arc::downgrade(&peer_connection);
-    peer_connection.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
-        let pc = pc.clone();
-        Box::pin(async move {
-            if let Some(c) = c {
-                if let Some(pc) = pc.upgrade() {
-                    let desc = pc.remote_description().await;
-                    if desc.is_some() {
-                        let candidate = c.to_json().await.unwrap();
-                        let mline_index = candidate.sdp_mline_index;
-                        let sdp_mid = candidate.sdp_mid;
-                        let candidate = candidate.candidate;
-                        println!("send ice: {candidate}");
-                        Distributor::named(format!("web_socket_{i}")).tell_one((mline_index, candidate, sdp_mid)).expect("couldn't send ICE to peer");
+    peer_connection
+        .on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
+            let pc = pc.clone();
+            Box::pin(async move {
+                if let Some(c) = c {
+                    if let Some(pc) = pc.upgrade() {
+                        let desc = pc.remote_description().await;
+                        if desc.is_some() {
+                            let candidate = c.to_json().await.unwrap();
+                            let mline_index = candidate.sdp_mline_index;
+                            let sdp_mid = candidate.sdp_mid;
+                            let candidate = candidate.candidate;
+                            println!("send ice: {candidate}");
+                            Distributor::named(format!("nats_actor"))
+                                .tell_one((i, (mline_index, candidate, sdp_mid)))
+                                .expect("couldn't send ICE to peer");
+                        }
                     }
                 }
-            }
-        })
-    })).await;
+            })
+        }))
+        .await;
 
     println!("received: {sdp}");
-    let offer =
-        serde_json::from_str::<RTCSessionDescription>(&sdp).expect("couldn't deserialize");
+    let offer = serde_json::from_str::<RTCSessionDescription>(&sdp).expect("couldn't deserialize");
 
     peer_connection
         .set_remote_description(offer)
@@ -186,7 +201,9 @@ async fn main_fn(sdp: String, i: u8, ctx: BastionContext) -> Result<(), ()> {
 
     if let Some(local_desc) = peer_connection.local_description().await {
         let json_str = local_desc.sdp;
-        Distributor::named(format!("web_socket_{i}")).tell_one((SDPType::Answer, json_str)).expect("couldn't send SDP a to peer");
+        Distributor::named(format!("nats_actor"))
+            .tell_one((i, (SDPType::Answer, json_str)))
+            .expect("couldn't send SDP a to peer");
     } else {
         println!("generate local_description failed!");
     }

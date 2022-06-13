@@ -1,8 +1,8 @@
-use bastion::{blocking, Bastion};
 use bastion::context::BastionContext;
 use bastion::distributor::Distributor;
 use bastion::message::MessageHandler;
 use bastion::supervisor::{RestartPolicy, RestartStrategy, SupervisorRef};
+use bastion::{blocking, Bastion};
 use futures::Stream;
 use gst_sdp::SDPMessage;
 
@@ -24,7 +24,7 @@ const WS_SERVER: &str = "wss://192.168.1.21:8443";
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
-enum JsonMsg {
+pub enum JsonMsg {
     Ice {
         candidate: String,
         #[serde(rename = "sdpMLineIndex")]
@@ -75,14 +75,20 @@ impl WsActor {
                     WebRtcActor::run(server_parent, &msg.to_string(), order);
                 }
             }
-            JsonMsg::Ice { candidate, sdp_mline_index, sdp_mid } => {
+            JsonMsg::Ice {
+                candidate,
+                sdp_mline_index,
+                sdp_mid,
+            } => {
                 let msg = json!({
                     "candidate": candidate,
                     "sdp_mid": sdp_mid,
                     "sdp_mline_index": sdp_mline_index,
                     "username_fragment": String::new()
                 });
-                Distributor::named(format!("webrtc_{order}")).tell_one((candidate, sdp_mline_index, sdp_mid)).expect("couldn't send ICE to WebRTC actor");
+                Distributor::named(format!("webrtc_{order}"))
+                    .tell_one((candidate, sdp_mline_index, sdp_mid))
+                    .expect("couldn't send ICE to WebRTC actor");
             }
         };
 
@@ -91,9 +97,10 @@ impl WsActor {
 }
 
 async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
-    let (mut ws, _) = async_tungstenite::async_std::connect_async_with_tls_connector(WS_SERVER, None)
-        .await
-        .map_err(|e| eprintln!("{}", e))?;
+    let (mut ws, _) =
+        async_tungstenite::async_std::connect_async_with_tls_connector(WS_SERVER, None)
+            .await
+            .map_err(|e| eprintln!("{}", e))?;
 
     let our_id = order;
     ws.send(WsMessage::Text(format!("HELLO {}", our_id)))
@@ -127,16 +134,18 @@ async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
                 println!("SEND:\n{msg}");
                 send_ws_msg_tx.unbounded_send(WsMessage::Text(msg));
             })
-            .on_tell(|(sdp_mline_index, candidate, sdp_mid): (u16, String, String), _| {
-                let msg = serde_json::to_string(&JsonMsg::Ice {
-                    candidate,
-                    sdp_mline_index,
-                    sdp_mid
-                })
-                .unwrap();
-                println!("SEND:\t{msg}");
-                send_ws_msg_tx.unbounded_send(WsMessage::Text(msg));
-            });
+            .on_tell(
+                |(sdp_mline_index, candidate, sdp_mid): (u16, String, String), _| {
+                    let msg = serde_json::to_string(&JsonMsg::Ice {
+                        candidate,
+                        sdp_mline_index,
+                        sdp_mid,
+                    })
+                    .unwrap();
+                    println!("SEND:\t{msg}");
+                    send_ws_msg_tx.unbounded_send(WsMessage::Text(msg));
+                },
+            );
     }
 }
 

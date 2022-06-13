@@ -3,8 +3,8 @@
 extern crate lazy_static;
 
 mod gstreamer_actor;
+mod nats_actor;
 mod pipeline;
-mod sendrecv;
 mod utils;
 mod web_socket;
 mod webrtc_actor;
@@ -12,6 +12,7 @@ mod webrtcbin_actor;
 
 use anyhow::Result;
 use bastion::prelude::*;
+use nats_actor::NatsActor;
 use web_socket::WsActor;
 use webrtc_actor::WebRtcActor;
 use webrtcbin_actor::{WebRTCBinActor, WebRTCBinActorType};
@@ -21,14 +22,10 @@ async fn main() {
     Bastion::init();
     Bastion::start();
 
-    for i in 1..=5 {
-        if i == 3 {
-            continue;
-        }
+    let num_of_cam = 4;
 
-        let ws_server = Bastion::supervisor(|s| s).unwrap();
-        WsActor::run(ws_server, i);
-    }
+    let nats = Bastion::supervisor(|s| s).unwrap();
+    NatsActor::run(nats, num_of_cam);
 
     Bastion::block_until_stopped();
 }

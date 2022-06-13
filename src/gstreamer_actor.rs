@@ -10,14 +10,9 @@ impl GstreamerActor {
         parent
             .supervisor(|s| {
                 s.with_restart_strategy(
-                    RestartStrategy::default()
-                        .with_restart_policy(RestartPolicy::Never)
+                    RestartStrategy::default().with_restart_policy(RestartPolicy::Never),
                 )
-                .children(|c| {
-                    c.with_exec(move |_| async move {
-                        main_fn(i).await
-                    })
-                })
+                .children(|c| c.with_exec(move |_| async move { main_fn(i).await }))
             })
             .expect("couldn't run Gstreamer actor");
     }
