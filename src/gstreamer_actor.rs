@@ -28,5 +28,4 @@ async fn main_fn(i: u8) -> Result<(), ()> {
     pipeline.run().expect("couldn't run pipeline on");
 
     loop {}
-    Ok(())
 }

@@ -22,10 +22,15 @@ async fn main() {
     Bastion::init();
     Bastion::start();
 
-    let num_of_cam = 4;
+    let num_of_cam = 3;
 
     let nats = Bastion::supervisor(|s| s).unwrap();
     NatsActor::run(nats, num_of_cam);
+
+    for i in 1..=num_of_cam {
+        let server_parent = Bastion::supervisor(|s| s).unwrap();
+        WebRtcActor::run(server_parent, i);
+    }
 
     Bastion::block_until_stopped();
 }

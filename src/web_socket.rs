@@ -72,7 +72,7 @@ impl WsActor {
                 });
                 if &type_ == "offer" {
                     let server_parent = Bastion::supervisor(|s| s).unwrap();
-                    WebRtcActor::run(server_parent, &msg.to_string(), order);
+                    // WebRtcActor::run(server_parent, &msg.to_string(), order);
                 }
             }
             JsonMsg::Ice {
