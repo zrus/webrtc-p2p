@@ -163,7 +163,7 @@ impl WebRTCPipeline {
             videotestsrc pattern=ball is-live=true ! video/x-raw,width=1280,height=720 ! videoconvert ! 
             x264enc threads=4 bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! 
             video/x-h264,profile=constrained-baseline ! h264parse ! rtph264pay config-interval=1 ! 
-            application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000,aggregate-mode=zero-latency,profile-level-id=42e01f ! webrtcbin.",
+            application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000,aggregate-mode=zero-latency ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
         // let pipeline = gst::parse_launch(
