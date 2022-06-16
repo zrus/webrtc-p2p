@@ -81,7 +81,7 @@ impl WebRTCPipeline {
 
 impl WebRTCPipeline {
     fn create_client() -> Result<Self, anyhow::Error> {
-        let pipeline = gst::parse_launch("webrtcbin name=webrtcbin ! audiotestsrc ! fakesink")
+        let pipeline = gst::parse_launch("webrtcbin name=webrtcbin turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle ! audiotestsrc ! fakesink")
             .expect("couldn't parse pipeline from string");
 
         let pipeline = pipeline
@@ -89,12 +89,10 @@ impl WebRTCPipeline {
             .expect("couldn't downcast pipeline");
 
         let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
-        webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
-        webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
 
         let direction = gst_webrtc::WebRTCRTPTransceiverDirection::Recvonly;
         let caps = gst::Caps::from_str(
-            "application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000",
+            "application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000,packetization-mode=(string)1,profile-level-id=(string)42e01f",
         )?;
         webrtcbin
             .emit_by_name("add-transceiver", &[&direction, &caps])
@@ -159,8 +157,9 @@ impl WebRTCPipeline {
 
     fn create_server() -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
-            "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! videoconvert ! 
-            vp8enc deadline=1 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
+            "webrtcbin name=webrtcbin turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle videotestsrc pattern=ball is-live=true ! videoconvert ! 
+            x264enc bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline,level=3.0 ! h264parse ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! 
+            application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000 ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
 
@@ -169,8 +168,10 @@ impl WebRTCPipeline {
             .expect("couldn't downcast pipeline");
 
         let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
-        webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
-        webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
+        if let Some(transceiver) = webrtcbin.emit_by_name("get-transceiver", &[&0.to_value()]).unwrap().and_then(|val| val.get::<gst_webrtc::WebRTCRTPTransceiver>().ok()) {
+            let current_dir = transceiver.property("current-direction")?.get::<gst_webrtc::WebRTCRTPTransceiverDirection>()?;
+            println!("{}", current_dir.value_type().to_string());
+        }
 
         let pipeline = Self(Arc::new(WebRTCPipelineInner {
             pipeline,
