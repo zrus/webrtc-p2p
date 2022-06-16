@@ -159,9 +159,9 @@ impl WebRTCPipeline {
 
     fn create_server(order: u8) -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
-            "webrtcbin name=webrtcbin message-forward=true turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle 
+            "webrtcbin name=webrtcbin message-forward=true turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle
             videotestsrc pattern=ball is-live=true ! videoconvert ! x264enc ! rtph264pay config-interval=-1 ! 
-            application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! webrtcbin.",
+            application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000 ! webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
         // let pipeline = gst::parse_launch(
