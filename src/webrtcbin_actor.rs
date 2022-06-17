@@ -160,8 +160,10 @@ impl WebRTCPipeline {
     fn create_server(order: u8) -> Result<Self, anyhow::Error> {
         let pipeline = gst::parse_launch(
             "webrtcbin name=webrtcbin message-forward=true turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle
-            videotestsrc pattern=ball is-live=true ! videoconvert ! x264enc ! rtph264pay config-interval=-1 ! 
-            application/x-rtp,media=video,encoding-name=H264,payload=100,clock-rate=90000 ! webrtcbin.",
+            videotestsrc pattern=ball is-live=true ! videoconvert ! queue max-size-buffers=1 !
+            x264enc bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-264,profile=constrained-baseline ! queue max-size-time=100000000 ! h264parse !
+            rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96 !
+            webrtcbin.",
         )
         .expect("couldn't parse pipeline from string");
         // let pipeline = gst::parse_launch(
@@ -175,18 +177,16 @@ impl WebRTCPipeline {
             .expect("couldn't downcast pipeline");
 
         let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
-
-        // if let Some(transceiver) = webrtcbin
-        //     .emit_by_name("get-transceiver", &[&0.to_value()])
-        //     .unwrap()
-        //     .and_then(|val| val.get::<gst_webrtc::WebRTCRTPTransceiver>().ok())
-        // {
-        //     transceiver.set_property("do-nack", &false.to_value())?;
-        //     transceiver.set_property(
-        //         "direction",
-        //         (gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly).to_value(),
-        //     )?;
-        // }
+        if let Some(transceiver) = webrtcbin
+            .emit_by_name("get-transceiver", &[&0.to_value()])
+            .unwrap()
+            .and_then(|val| val.get::<gst_webrtc::WebRTCRTPTransceiver>().ok())
+        {
+            transceiver.set_property(
+                "direction",
+                gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly,
+            )?;
+        }
 
         let pipeline = Self(Arc::new(WebRTCPipelineInner {
             pipeline,
