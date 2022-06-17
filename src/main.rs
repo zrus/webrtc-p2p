@@ -24,7 +24,7 @@ async fn main() {
     Bastion::block_until_stopped();
 }
 
-#[cfg(feature = "webrtcbin")]
+// #[cfg(feature = "webrtcbin")]
 fn main_fn() -> Result<(), anyhow::Error> {
     // MY WORKS
 
@@ -45,17 +45,17 @@ fn main_fn() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-#[cfg(any(not(feature = "webrtcbin"), feature = "webrtc-rs"))]
-fn main_fn() -> Result<(), anyhow::Error> {
-    use webrtc_actor::WebRtcActor;
+// #[cfg(any(not(feature = "webrtcbin"), feature = "webrtc-rs"))]
+// fn main_fn() -> Result<(), anyhow::Error> {
+//     use webrtc_actor::WebRtcActor;
 
-    let mut line = String::new();
+//     let mut line = String::new();
 
-    std::io::stdin().read_line(&mut line)?;
-    line = line.trim().to_owned();
+//     std::io::stdin().read_line(&mut line)?;
+//     line = line.trim().to_owned();
 
-    let parent = Bastion::supervisor(|s| s).unwrap();
-    WebRtcActor::run(parent, &line);
+//     let parent = Bastion::supervisor(|s| s).unwrap();
+//     WebRtcActor::run(parent, &line);
 
-    Ok(())
-}
+//     Ok(())
+// }
