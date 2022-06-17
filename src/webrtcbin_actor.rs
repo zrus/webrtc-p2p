@@ -161,7 +161,7 @@ impl WebRTCPipeline {
         let pipeline = gst::parse_launch(
             "webrtcbin name=webrtcbin message-forward=true turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle
             videotestsrc pattern=ball is-live=true ! videoconvert ! queue max-size-buffers=1 !
-            x264enc bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-264,profile=constrained-baseline ! queue max-size-time=100000000 ! h264parse !
+            x264enc bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline ! queue max-size-time=100000000 ! h264parse !
             rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96 !
             webrtcbin.",
         )
