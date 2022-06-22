@@ -69,7 +69,7 @@ impl WsActor {
             let msg = split
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("can't parse peer message"))?;
-git 
+
             let json_msg: JsonMsg = serde_json::from_str(msg)?;
             match json_msg {
                 JsonMsg::Sdp { type_, sdp } => {
