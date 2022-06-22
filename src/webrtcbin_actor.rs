@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     str::FromStr,
     sync::{Arc, Weak},
 };
@@ -15,16 +16,20 @@ use bastion::{
 use byte_slice_cast::AsSliceOf;
 use gst::{
     glib,
-    prelude::{Cast, ElementExtManual, GObjectExtManualGst, ObjectExt, ToValue},
+    prelude::{Cast, ElementExtManual, GObjectExtManualGst, ObjectExt, PadExtManual, ToValue},
     traits::{ElementExt, GstBinExt, GstObjectExt, PadExt},
 };
 use gst_sdp::SDPMessage;
 use serde_json::{json, Value};
+use tokio::sync::Mutex;
 
 use crate::{upgrade_weak, utils};
 
 pub type SDPType = gst_webrtc::WebRTCSDPType;
 pub type SessionDescription = gst_webrtc::WebRTCSessionDescription;
+
+const VIDEO_WIDTH: u32 = 1280;
+const VIDEO_HEIGHT: u32 = 720;
 
 #[derive(Copy, Clone)]
 pub enum WebRTCBinActorType {
@@ -42,206 +47,39 @@ impl AsRef<str> for WebRTCBinActorType {
 }
 
 #[derive(Debug, Clone)]
-pub struct WebRTCPipeline(Arc<WebRTCPipelineInner>);
+struct Peer(Arc<PeerInner>);
 
 #[derive(Debug, Clone)]
-pub struct WebRTCPipelineWeak(Weak<WebRTCPipelineInner>);
+struct PeerWeak(Weak<PeerInner>);
 
 #[derive(Debug)]
-pub struct WebRTCPipelineInner {
-    pipeline: gst::Pipeline,
+struct PeerInner {
+    id: u32,
+    bin: gst::Bin,
     webrtcbin: gst::Element,
 }
 
-impl std::ops::Deref for WebRTCPipeline {
-    type Target = WebRTCPipelineInner;
+impl std::ops::Deref for Peer {
+    type Target = PeerInner;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl Drop for WebRTCPipelineInner {
-    fn drop(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Null);
+impl PeerWeak {
+    fn upgrade(&self) -> Option<Peer> {
+        self.0.upgrade().map(Peer)
     }
 }
 
-impl WebRTCPipelineWeak {
-    fn upgrade(&self) -> Option<WebRTCPipeline> {
-        self.0.upgrade().map(WebRTCPipeline)
+impl Peer {
+    pub fn downgrade(&self) -> PeerWeak {
+        PeerWeak(Arc::downgrade(&self.0))
     }
 }
 
-impl WebRTCPipeline {
-    pub fn downgrade(&self) -> WebRTCPipelineWeak {
-        WebRTCPipelineWeak(Arc::downgrade(&self.0))
-    }
-}
-
-impl WebRTCPipeline {
-    fn create_client(order: u8) -> Result<Self, anyhow::Error> {
-        let pipeline = gst::parse_launch("webrtcbin name=webrtcbin ! audiotestsrc ! fakesink")
-            .expect("couldn't parse pipeline from string");
-
-        let pipeline = pipeline
-            .downcast::<gst::Pipeline>()
-            .expect("couldn't downcast pipeline");
-
-        let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
-        webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
-        webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
-
-        let direction = gst_webrtc::WebRTCRTPTransceiverDirection::Recvonly;
-        let caps = gst::Caps::from_str(
-            "application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000",
-        )?;
-        webrtcbin
-            .emit_by_name("add-transceiver", &[&direction, &caps])
-            .expect("couldn't add transceiver to pipeline");
-
-        let pipeline = Self(Arc::new(WebRTCPipelineInner {
-            pipeline,
-            webrtcbin,
-        }));
-
-        let pl_clone = pipeline.downgrade();
-        pipeline
-            .webrtcbin
-            .connect("on-negotiation-needed", true, move |_| {
-                let pipeline = upgrade_weak!(pl_clone, None);
-                if let Err(err) = pipeline.on_negotiation_needed(order) {
-                    gst::element_error!(
-                        pipeline.pipeline,
-                        gst::LibraryError::Failed,
-                        ("Failed to negotiate: {:?}", err)
-                    );
-                }
-
-                None
-            })?;
-
-        let pl_clone = pipeline.downgrade();
-        pipeline
-            .webrtcbin
-            .connect("on-ice-candidate", true, move |values| {
-                let mlineindex = values[1].get::<u32>().expect("invalid argument");
-                let candidate = values[2].get::<String>().expect("invalid argument");
-                let pipeline = upgrade_weak!(pl_clone, None);
-
-                if let Err(err) = pipeline.on_ice_candidate("server", mlineindex, candidate) {
-                    gst::element_error!(
-                        pipeline.pipeline,
-                        gst::LibraryError::Failed,
-                        ("Failed to send ICE candidate: {:?}", err)
-                    );
-                }
-
-                None
-            })
-            .expect("couldn't connect webrtcbin to ice candidate process");
-
-        let pl_clone = pipeline.downgrade();
-        pipeline.webrtcbin.connect_pad_added(move |_, pad| {
-            let pipeline = upgrade_weak!(pl_clone);
-
-            if let Err(err) = pipeline.on_incoming_stream(pad) {
-                gst::element_error!(
-                    pipeline.pipeline,
-                    gst::LibraryError::Failed,
-                    ("Failed to handle incoming stream: {:?}", err)
-                );
-            }
-        });
-
-        Ok(pipeline)
-    }
-
-    fn create_server(order: u8) -> Result<Self, anyhow::Error> {
-        let pipeline = gst::parse_launch(
-            "webrtcbin name=webrtcbin message-forward=true turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle
-            videotestsrc pattern=ball is-live=true ! videoconvert ! queue max-size-buffers=1 !
-            x264enc bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline ! queue max-size-time=100000000 ! h264parse !
-            rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96 !
-            webrtcbin.",
-        )
-        .expect("couldn't parse pipeline from string");
-        // let pipeline = gst::parse_launch(
-        //     "webrtcbin name=webrtcbin rtspsrc location=rtsp://test:test123@192.168.1.11:88/videoMain is-live=true !
-        //     application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! webrtcbin.",
-        // )
-        // .expect("couldn't parse pipeline from string");
-
-        let pipeline = pipeline
-            .downcast::<gst::Pipeline>()
-            .expect("couldn't downcast pipeline");
-
-        let webrtcbin = pipeline.by_name("webrtcbin").expect("can't find webrtcbin");
-        if let Some(transceiver) = webrtcbin
-            .emit_by_name("get-transceiver", &[&0.to_value()])
-            .unwrap()
-            .and_then(|val| val.get::<gst_webrtc::WebRTCRTPTransceiver>().ok())
-        {
-            transceiver.set_property(
-                "direction",
-                gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly,
-            )?;
-        }
-
-        let pipeline = Self(Arc::new(WebRTCPipelineInner {
-            pipeline,
-            webrtcbin,
-        }));
-
-        let pl_clone = pipeline.downgrade();
-        pipeline
-            .webrtcbin
-            .connect("on-ice-candidate", false, move |values| {
-                let mlineindex = values[1].get::<u32>().expect("invalid argument");
-                let candidate = values[2].get::<String>().expect("invalid argument");
-
-                let pipeline = upgrade_weak!(pl_clone, None);
-
-                if let Err(err) = pipeline.on_ice_candidate(
-                    &format!("web_socket_{}", order),
-                    mlineindex,
-                    candidate,
-                ) {
-                    gst::element_error!(
-                        pipeline.pipeline,
-                        gst::LibraryError::Failed,
-                        ("Failed to send ICE candidate: {:?}", err)
-                    );
-                }
-
-                None
-            })
-            .expect("couldn't connect webrtcbin to ice candidate process");
-
-        Ok(pipeline)
-    }
-
-    pub fn init(type_: &WebRTCBinActorType, order: u8) -> Result<Self, anyhow::Error> {
-        match type_ {
-            &WebRTCBinActorType::Server => Self::create_server(order),
-            &WebRTCBinActorType::Client => Self::create_client(order),
-        }
-    }
-
-    pub fn run(&self) -> Result<(), anyhow::Error> {
-        self.pipeline.call_async(|pipeline| {
-            if pipeline.set_state(gst::State::Playing).is_err() {
-                gst::element_error!(
-                    pipeline,
-                    gst::LibraryError::Failed,
-                    ("Failed to set pipeline to Playing")
-                );
-            }
-        });
-
-        Ok(())
-    }
-
+impl Peer {
     async fn handle_sdp(
         &self,
         type_: SDPType,
@@ -259,32 +97,30 @@ impl WebRTCPipeline {
                 Ok(())
             }
             SDPType::Offer => {
-                let pl_clone = self.downgrade();
-                self.pipeline.call_async(move |_| {
-                    let pipeline = upgrade_weak!(pl_clone);
+                let peer_weak = self.downgrade();
+                self.bin.call_async(move |_| {
+                    let peer = upgrade_weak!(peer_weak);
 
                     let offer = SessionDescription::new(type_, sdp);
-                    pipeline
-                        .0
+                    peer.0
                         .webrtcbin
                         .emit_by_name("set-remote-description", &[&offer, &None::<gst::Promise>])
                         .expect("couldn't set remote description for webrtcbin");
 
-                    let pl_clone = pipeline.downgrade();
+                    let peer_cl = peer.downgrade();
                     let promise = gst::Promise::with_change_func(move |reply| {
-                        let pipeline = upgrade_weak!(pl_clone);
+                        let peer = upgrade_weak!(peer_cl);
 
-                        if let Err(err) = pipeline.on_answer_created(reply, order) {
+                        if let Err(err) = peer.on_answer_created(reply, order) {
                             gst::element_error!(
-                                pipeline.pipeline,
+                                peer.bin,
                                 gst::LibraryError::Failed,
                                 ("Failed to send SDP answer: {:?}", err)
                             );
                         }
                     });
 
-                    pipeline
-                        .0
+                    peer.0
                         .webrtcbin
                         .emit_by_name("create-answer", &[&None::<gst::Structure>, &promise])
                         .expect("couldn't create answer for webrtcbin");
@@ -305,65 +141,6 @@ impl WebRTCPipeline {
         self.webrtcbin
             .emit_by_name("add-ice-candidate", &[&mlineindex, &candidate])
             .expect("couldn't add ice candidate");
-        // let property = self.webrtcbin.property("ice-connection-state")?;
-        // let ice_state = property.get::<gst_webrtc::WebRTCICEConnectionState>()?;
-        // println!("\n==========           ice state: {:?}\n", ice_state);
-        Ok(())
-    }
-
-    fn on_negotiation_needed(&self, order: u8) -> Result<(), anyhow::Error> {
-        println!("Starting negotiation");
-
-        let pl_clone = self.downgrade();
-        let promise = gst::Promise::with_change_func(move |reply| {
-            let pipeline = upgrade_weak!(pl_clone);
-
-            if let Err(err) = pipeline.on_offer_created(reply, order) {
-                gst::element_error!(
-                    pipeline.pipeline,
-                    gst::LibraryError::Failed,
-                    ("Failed to send SDP offer: {:?}", err)
-                );
-            }
-        });
-
-        self.webrtcbin
-            .emit_by_name("create-offer", &[&None::<gst::Structure>, &promise])
-            .expect("couldn't create offer");
-
-        Ok(())
-    }
-
-    fn on_offer_created(
-        &self,
-        reply: Result<Option<&gst::StructureRef>, gst::PromiseError>,
-        order: u8,
-    ) -> Result<(), anyhow::Error> {
-        let reply = match reply {
-            Ok(Some(reply)) => reply,
-            Ok(None) => {
-                bail!("Offer creation future got no response");
-            }
-            Err(err) => {
-                bail!("Offer creation future got error response: {:?}", err);
-            }
-        };
-
-        let offer = reply
-            .value("offer")
-            .unwrap()
-            .get::<gst_webrtc::WebRTCSessionDescription>()
-            .expect("Invalid argument");
-        self.webrtcbin
-            .emit_by_name("set-local-description", &[&offer, &None::<gst::Promise>])
-            .unwrap();
-
-        let sdp = offer.sdp();
-
-        Distributor::named(format!("server_{}", order))
-            .tell_one((SDPType::Offer, sdp))
-            .expect("couldn't send SDP offer to server");
-
         Ok(())
     }
 
@@ -418,71 +195,270 @@ impl WebRTCPipeline {
             return Ok(());
         }
 
-        let decodebin = gst::ElementFactory::make("decodebin", None).unwrap();
-        let app_clone = self.downgrade();
-        decodebin.connect_pad_added(move |_decodebin, pad| {
-            let app = upgrade_weak!(app_clone);
+        let caps = pad.current_caps().unwrap();
+        let s = caps.structure(0).unwrap();
+        let media_type = s
+            .get::<&str>("media")
+            .map_err(|_| anyhow::anyhow!("no media type in caps: {caps:?}"))?;
 
-            if let Err(err) = app.on_incoming_decodebin_stream(pad) {
+        let conv = if media_type == "video" {
+            gst::parse_bin_from_description(&format!("
+            decodebin name=dbin ! queue ! videoconvert ! videoscale ! capsfilter name=src caps=video/x-raw,width={width},height={height},pixel-aspect-ratio=1/1
+            ", width=VIDEO_WIDTH, height=VIDEO_HEIGHT), false)?
+        } else {
+            println!("Unknown pad {pad:?}, ignoring");
+            return Ok(());
+        };
+
+        let dbin = conv.by_name("dbin").unwrap();
+        let sink_pad =
+            gst::GhostPad::with_target(Some("sink"), &dbin.static_pad("sink").unwrap()).unwrap();
+        conv.add_pad(&sink_pad).unwrap();
+
+        let src = conv.by_name("src").unwrap();
+        let src_pad =
+            gst::GhostPad::with_target(Some("src"), &src.static_pad("src").unwrap()).unwrap();
+        conv.add_pad(&src_pad).unwrap();
+
+        self.bin.add(&conv).unwrap();
+        conv.sync_state_with_parent()
+            .with_context(|| format!("can't start sink for stream {caps:?}"))?;
+
+        pad.link(&sink_pad)
+            .with_context(|| format!("can't link sink for stream {caps:?}"))?;
+
+        if media_type == "video" {
+            let src_pad = gst::GhostPad::with_target(Some("video_src"), &src_pad).unwrap();
+            src_pad.set_active(true).unwrap();
+            self.bin.add_pad(&src_pad).unwrap();
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WebRTCPipeline(Arc<WebRTCPipelineInner>);
+
+#[derive(Debug, Clone)]
+pub struct WebRTCPipelineWeak(Weak<WebRTCPipelineInner>);
+
+#[derive(Debug)]
+pub struct WebRTCPipelineInner {
+    pipeline: gst::Pipeline,
+    video_tee: gst::Element,
+    peers: Mutex<BTreeMap<u32, Peer>>,
+}
+
+impl std::ops::Deref for WebRTCPipeline {
+    type Target = WebRTCPipelineInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for WebRTCPipelineInner {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
+impl WebRTCPipelineWeak {
+    fn upgrade(&self) -> Option<WebRTCPipeline> {
+        self.0.upgrade().map(WebRTCPipeline)
+    }
+}
+
+impl WebRTCPipeline {
+    pub fn downgrade(&self) -> WebRTCPipelineWeak {
+        WebRTCPipelineWeak(Arc::downgrade(&self.0))
+    }
+}
+
+impl WebRTCPipeline {
+    fn create_server(order: u8) -> Result<Self, anyhow::Error> {
+        let pipeline = gst::parse_launch(
+            &format!("videotestsrc pattern=ball is-live=true ! videoconvert ! queue max-size-buffers=1 !
+            x264enc bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline ! queue max-size-time=100000000 ! h264parse !
+            rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! tee name=video-tee ! queue ! fakesink sync=true")
+        )
+        .expect("couldn't parse pipeline from string");
+
+        let pipeline = pipeline
+            .downcast::<gst::Pipeline>()
+            .expect("couldn't downcast pipeline");
+
+        let video_tee = pipeline.by_name("video-tee").expect("video-tee not found");
+
+        let pipeline = Self(Arc::new(WebRTCPipelineInner {
+            pipeline,
+            video_tee,
+            peers: Mutex::new(BTreeMap::new()),
+        }));
+
+        Ok(pipeline)
+    }
+
+    pub fn init(type_: &WebRTCBinActorType, order: u8) -> Result<Self, anyhow::Error> {
+        Self::create_server(order)
+    }
+
+    pub fn run(&self) -> Result<(), anyhow::Error> {
+        self.pipeline.call_async(|pipeline| {
+            if pipeline.set_state(gst::State::Playing).is_err() {
                 gst::element_error!(
-                    app.pipeline,
+                    pipeline,
                     gst::LibraryError::Failed,
-                    ("Failed to handle decoded stream: {:?}", err)
+                    ("Failed to set pipeline to Playing")
                 );
             }
         });
 
-        self.pipeline.add(&decodebin).unwrap();
-        decodebin.sync_state_with_parent().unwrap();
+        Ok(())
+    }
 
-        let sinkpad = decodebin.static_pad("sink").unwrap();
-        pad.link(&sinkpad);
+    async fn add_peer(&self, peer_id: u32, order: u8) -> Result<(), anyhow::Error> {
+        println!("Adding peer {peer_id}..");
+
+        let mut peers = self.peers.lock().await;
+        if peers.contains_key(&peer_id) {
+            bail!("Peer {peer_id} already connected");
+        }
+
+        let peer_bin = gst::parse_bin_from_description(
+            "
+            queue name=video_queue ! webrtcbin. \
+            webrtcbin name=webrtcbin bundle-policy=max-bundile \
+            turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp
+        ",
+            false,
+        )?;
+
+        let webrtcbin = peer_bin.by_name("webrtcbin").expect("webrtcbin not found");
+        if let Some(transceiver) = webrtcbin
+            .emit_by_name("get-transceiver", &[&0.to_value()])
+            .unwrap()
+            .and_then(|val| val.get::<gst_webrtc::WebRTCRTPTransceiver>().ok())
+        {
+            transceiver.set_property(
+                "direction",
+                gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly,
+            )?;
+        }
+
+        let video_queue = peer_bin
+            .by_name("video-queue")
+            .expect("video-queue not found");
+        let video_sink_pad = gst::GhostPad::with_target(
+            Some("video_sink"),
+            &video_queue.static_pad("sink").unwrap(),
+        )
+        .unwrap();
+
+        peer_bin.add_pad(&video_sink_pad).unwrap();
+
+        let peer = Peer(Arc::new(PeerInner {
+            id: peer_id,
+            bin: peer_bin,
+            webrtcbin,
+        }));
+
+        peers.insert(peer_id, peer.clone());
+        drop(peers);
+
+        self.pipeline.add(&peer.bin).unwrap();
+
+        let peer_cl = peer.downgrade();
+        peer.webrtcbin
+            .connect("on-ice-candidate", false, move |values| {
+                let mlineindex = values[1].get::<u32>().expect("invalid argument");
+                let candidate = values[2].get::<String>().expect("invalid argument");
+
+                let peer = upgrade_weak!(peer_cl, None);
+
+                if let Err(err) =
+                    peer.on_ice_candidate(&format!("web_socket_{}", order), mlineindex, candidate)
+                {
+                    gst::element_error!(
+                        peer.bin,
+                        gst::LibraryError::Failed,
+                        ("Failed to send ICE candidate: {:?}", err)
+                    );
+                }
+
+                None
+            })
+            .expect("couldn't connect webrtcbin to ice candidate process");
+
+        let peer_cl = peer.downgrade();
+        peer.webrtcbin.connect_pad_added(move |_, pad| {
+            let peer = upgrade_weak!(peer_cl);
+
+            if let Err(err) = peer.on_incoming_stream(pad) {
+                gst::element_error!(
+                    peer.bin,
+                    gst::LibraryError::Failed,
+                    ("Failed to handle incoming stream: {:?}", err)
+                );
+            }
+        });
+
+        let video_src_pad = self.video_tee.request_pad_simple("src_%u").unwrap();
+        let video_block = video_src_pad
+            .add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM, |_, _| {
+                gst::PadProbeReturn::Ok
+            })
+            .unwrap();
+        video_src_pad.link(&video_sink_pad)?;
+
+        peer.bin.call_async(move |bin| {
+            if bin.sync_state_with_parent().is_err() {
+                gst::element_error!(
+                    bin,
+                    gst::LibraryError::Failed,
+                    ("Failed to set peer bin to playing")
+                );
+            }
+
+            video_src_pad.remove_probe(video_block);
+        });
 
         Ok(())
     }
 
-    fn on_incoming_decodebin_stream(&self, pad: &gst::Pad) -> Result<(), anyhow::Error> {
-        let caps = pad.current_caps().unwrap();
-        let name = caps.structure(0).unwrap().name();
+    async fn remove_peer(&self, peer_id: u32, order: u8) -> Result<(), anyhow::Error> {
+        println!("Removing peer {peer_id}..");
 
-        let sink = if name.starts_with("video/") {
-            // gst::parse_bin_from_description("queue ! videoconvert ! appsink name=app", true)?
-            gst::parse_bin_from_description("queue ! videoconvert ! jpegenc ! multifilesink post-messages=true location=\"./frames/frame%d.jpg\"", true)?
-        } else {
-            println!("Unknown pad {:?}, ignoring", pad);
-            return Ok(());
-        };
+        let mut peers = self.peers.lock().await;
+        if let Some(peer) = peers.remove(&peer_id) {
+            drop(peers);
 
-        // let app = sink
-        //     .by_name("app")
-        //     .expect("couldn't get element named app")
-        //     .downcast::<gst_app::AppSink>()
-        //     .expect("couldn't downcast to appsink");
+            let pipeline_cl = self.downgrade();
+            self.pipeline.call_async(move |_| {
+                let pipeline = upgrade_weak!(pipeline_cl);
 
-        // app.set_property("max-buffers", 5u32);
-        // app.set_property("drop", true);
-        // app.set_property("sync", true);
-        // app.set_property("wait-on-eos", false);
+                let videotee_sink_pad = pipeline.video_tee.static_pad("sink").unwrap();
+                let video_block = videotee_sink_pad
+                    .add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM, |_, _| {
+                        gst::PadProbeReturn::Ok
+                    })
+                    .unwrap();
 
-        // app.set_callbacks(
-        //     gst_app::AppSinkCallbacks::builder()
-        //         .new_sample(move |appsink| {
-        //             let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let video_sink_pad = peer.bin.static_pad("video_sink").unwrap();
 
-        //             println!("{:?}", sample);
+                if let Some(videotee_src_pad) = video_sink_pad.peer() {
+                    let _ = videotee_src_pad.unlink(&video_sink_pad);
+                    pipeline.video_tee.release_request_pad(&videotee_src_pad);
+                }
+                videotee_sink_pad.remove_probe(video_block);
 
-        //             Ok(gst::FlowSuccess::Ok)
-        //         })
-        //         .build(),
-        // );
+                let _ = pipeline.pipeline.remove(&peer.bin);
+                let _ = peer.bin.set_state(gst::State::Null);
 
-        self.pipeline.add(&sink).unwrap();
-        sink.sync_state_with_parent()
-            .with_context(|| format!("can't start sink for stream {:?}", caps))?;
-
-        let sinkpad = sink.static_pad("sink").unwrap();
-        pad.link(&sinkpad)
-            .with_context(|| format!("can't link sink for stream {:?}", caps))?;
+                println!("Removed peer {}", peer.id);
+            })
+        }
 
         Ok(())
     }
@@ -545,25 +521,53 @@ async fn main_fn(ctx: BastionContext, type_: WebRTCBinActorType, order: u8) -> R
     let pipeline = WebRTCPipeline::init(&type_, order).expect("couldn't create webrtcbin pipeline");
     pipeline.run().expect("couldn't start webrtc pipeline up");
     let pl_clone = pipeline.downgrade();
-    blocking! {main_loop(pipeline)};
+    // blocking! {main_loop(pipeline)};
     loop {
         MessageHandler::new(ctx.recv().await?)
-            .on_tell(|(sdp_type, sdp): (SDPType, SDPMessage), _| {
-                println!("{} RECEIVED:\n{}", type_.as_ref(), sdp.as_text().unwrap());
-                run! { async {
+            .on_tell(
+                |(peer_id, (sdp_type, sdp)): (u32, (SDPType, SDPMessage)), _| {
                     let pipeline = upgrade_weak!(pl_clone);
-                    pipeline
-                        .handle_sdp(sdp_type, sdp, order)
-                        .await
-                        .expect("couldn't handle sdp");
-                }}
-            })
-            .on_tell(|ice_candidate: (u32, String), _| {
-                println!("{} RECEIVED:\n{:?}", type_.as_ref(), ice_candidate);
+                    run!(async {
+                        let peers = pipeline.peers.lock().await;
+                        let peer = peers
+                            .get(&peer_id)
+                            .ok_or_else(|| anyhow::anyhow!("can't find peer {peer_id}"))
+                            .unwrap()
+                            .clone();
+                        drop(peers);
+                        peer.handle_sdp(sdp_type, sdp, order).await;
+                    });
+                },
+            )
+            .on_tell(|(peer_id, ice_candidate): (u32, (u32, String)), _| {
                 let pipeline = upgrade_weak!(pl_clone);
-                pipeline
-                    .handle_ice(ice_candidate.0, ice_candidate.1, order)
-                    .expect("couldn't handle sdp");
+                run!(async {
+                    let peers = pipeline.peers.lock().await;
+                    let peer = peers
+                        .get(&peer_id)
+                        .ok_or_else(|| anyhow::anyhow!("can't find peer {peer_id}"))
+                        .unwrap()
+                        .clone();
+                    drop(peers);
+                    peer.handle_ice(ice_candidate.0, ice_candidate.1, order);
+                });
+            })
+            .on_tell(|(msg_type, peer_id): (&str, String), _| {
+                let pipeline = upgrade_weak!(pl_clone);
+                let peer_id = str::parse::<u32>(&peer_id)
+                    .with_context(|| format!("Can't parse peer id"))
+                    .unwrap();
+                run!(async {
+                    match msg_type {
+                        "add" => {
+                            pipeline.add_peer(peer_id, order).await;
+                        }
+                        "remove" => {
+                            pipeline.remove_peer(peer_id, order).await;
+                        }
+                        _ => {}
+                    }
+                });
             });
     }
 }

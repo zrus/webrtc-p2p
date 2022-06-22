@@ -38,7 +38,7 @@ enum JsonMsg {
 pub struct WsActor;
 
 impl WsActor {
-    pub fn run(parent: SupervisorRef, order: u8) {
+    pub fn run(parent: SupervisorRef, order: u8, room_id: u16) {
         parent
             .supervisor(|s| {
                 s.with_restart_strategy(
@@ -46,7 +46,7 @@ impl WsActor {
                 )
                 .children(move |c| {
                     c.with_distributor(Distributor::named(format!("web_socket_{}", order)))
-                        .with_exec(move |ctx| async_main(ctx, order))
+                        .with_exec(move |ctx| async_main(ctx, order, room_id))
                 })
             })
             .expect("couldn't run WebRTC actor");
@@ -57,31 +57,52 @@ impl WsActor {
             bail!("Got error message: {}", msg);
         }
 
-        let json_msg: JsonMsg = serde_json::from_str(msg)?;
-
         let webrtcbin = Distributor::named(format!("server_{}", order));
 
-        match json_msg {
-            JsonMsg::Sdp { type_, sdp } => {
-                let type_ = match type_.as_str() {
-                    "offer" => SDPType::Offer,
-                    "answer" => SDPType::Answer,
-                    _ => bail!("sdp type not supported"),
-                };
-                let sdp = SDPMessage::parse_buffer(sdp.as_bytes())?;
-                webrtcbin.tell_one((type_, sdp))
-            }
-            JsonMsg::Ice {
-                sdp_mline_index,
-                candidate,
-            } => webrtcbin.tell_one((sdp_mline_index, candidate)),
-        };
+        if msg.starts_with("ROOM_PEER_MSG ") {
+            let mut split = msg["ROOM_PEER_MSG ".len()..].splitn(2, ' ');
+            let peer_id = split
+                .next()
+                .and_then(|s| str::parse::<u32>(s).ok())
+                .ok_or_else(|| anyhow::anyhow!("can't parse peer id"))?;
+
+            let msg = split
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("can't parse peer message"))?;
+git 
+            let json_msg: JsonMsg = serde_json::from_str(msg)?;
+            match json_msg {
+                JsonMsg::Sdp { type_, sdp } => {
+                    let type_ = match type_.as_str() {
+                        "offer" => SDPType::Offer,
+                        "answer" => SDPType::Answer,
+                        _ => bail!("sdp type not supported"),
+                    };
+                    let sdp = SDPMessage::parse_buffer(sdp.as_bytes())?;
+                    webrtcbin.tell_one((peer_id, (type_, sdp)))
+                }
+                JsonMsg::Ice {
+                    sdp_mline_index,
+                    candidate,
+                } => webrtcbin.tell_one((peer_id, (sdp_mline_index, candidate))),
+            };
+        } else if msg.starts_with("ROOM_PEER_JOINED") {
+            let mut split = msg["ROOM_PEER_JOINED ".len()..].splitn(2, ' ');
+            let peer_id = split.next().ok_or_else(|| anyhow!("Can't parse peer id"))?;
+
+            webrtcbin.tell_one(("add", peer_id.to_owned()));
+        } else if msg.starts_with("ROOM_PEER_LEFT") {
+            let mut split = msg["ROOM_PEER_LEFT ".len()..].splitn(2, ' ');
+            let peer_id = split.next().ok_or_else(|| anyhow!("Can't parse peer id"))?;
+
+            webrtcbin.tell_one(("remove", peer_id.to_owned()));
+        }
 
         Ok(())
     }
 }
 
-async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
+async fn async_main(ctx: BastionContext, order: u8, room_id: u16) -> Result<(), ()> {
     let (mut ws, _) = async_tungstenite::async_std::connect_async(WS_SERVER)
         .await
         .map_err(|e| eprintln!("{}", e))?;
@@ -100,6 +121,27 @@ async fn async_main(ctx: BastionContext, order: u8) -> Result<(), ()> {
 
     if msg != WsMessage::Text("HELLO".into()) {
         eprintln!("server {} didn't say HELLO", order);
+    }
+
+    ws.send(WsMessage::Text(format!("ROOM {room_id}")))
+        .await
+        .unwrap();
+
+    let msg = ws
+        .next()
+        .await
+        .ok_or_else(|| anyhow!("didn't receive anything"))
+        .map_err(|e| eprintln!("{}", e))?
+        .map_err(|e| eprintln!("error"))?;
+
+    if let WsMessage::Text(text) = &msg {
+        if !text.starts_with("ROOM_OK") {
+            println!("server error: {:?}", text);
+        }
+
+        println!("Joined room {room_id}");
+    } else {
+        println!("server error: {:?}", msg);
     }
 
     let (send_ws_msg_tx, send_ws_msg_rx) = mpsc::unbounded::<WsMessage>();
