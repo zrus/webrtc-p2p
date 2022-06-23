@@ -158,19 +158,19 @@ impl WebRTCPipeline {
     }
 
     fn create_server(order: u8) -> Result<Self, anyhow::Error> {
-        let pipeline = gst::parse_launch(
-            "webrtcbin name=webrtcbin message-forward=true turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle
-            videotestsrc pattern=ball is-live=true ! videoconvert ! queue max-size-buffers=1 !
-            x264enc bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline ! queue max-size-time=100000000 ! h264parse !
-            rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96 !
-            webrtcbin.",
-        )
-        .expect("couldn't parse pipeline from string");
         // let pipeline = gst::parse_launch(
-        //     "webrtcbin name=webrtcbin rtspsrc location=rtsp://test:test123@192.168.1.11:88/videoMain is-live=true !
-        //     application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! webrtcbin.",
+        //     "webrtcbin name=webrtcbin message-forward=true turn-server=turn://tel4vn:TEL4VN.COM@turn.tel4vn.com:5349?transport=tcp bundle-policy=max-bundle
+        //     videotestsrc pattern=ball is-live=true ! videoconvert ! queue max-size-buffers=1 !
+        //     x264enc bitrate=600 speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline ! queue max-size-time=100000000 ! h264parse !
+        //     rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=100 !
+        //     webrtcbin.",
         // )
         // .expect("couldn't parse pipeline from string");
+        let pipeline = gst::parse_launch(
+            "webrtcbin name=webrtcbin videotestsrc pattern=ball is-live=true ! vp8enc ! rtpvp8pay !
+            application/x-rtp,media=video,encoding-name=VP8,payload=96,clock-rate=90000 ! webrtcbin.",
+        )
+        .expect("couldn't parse pipeline from string");
 
         let pipeline = pipeline
             .downcast::<gst::Pipeline>()
